@@ -72,6 +72,76 @@
 
     canvas{ max-width:100%; }
 
+    /* --- Future projection toggle --- */
+    .projectionRow{
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      gap:12px;
+      margin-top:14px;
+      padding-bottom:14px;
+      border-bottom:1px solid var(--border);
+    }
+
+    .projectionRow .label{
+      font-weight:900;
+      letter-spacing:.02em;
+      text-transform:uppercase;
+      font-size:12px;
+      color:#111;
+    }
+
+    .switch{
+      display:flex;
+      align-items:center;
+      gap:10px;
+      user-select:none;
+    }
+
+    .switch input{
+      width:46px;
+      height:26px;
+      appearance:none;
+      -webkit-appearance:none;
+      border:1px solid var(--border);
+      background:#f3f4f6;
+      border-radius:999px;
+      position:relative;
+      cursor:pointer;
+      outline:none;
+      padding:0;
+    }
+
+    .switch input::after{
+      content:"";
+      width:20px;
+      height:20px;
+      border-radius:999px;
+      background:#fff;
+      border:1px solid #d1d5db;
+      position:absolute;
+      top:50%;
+      left:3px;
+      transform:translateY(-50%);
+      transition: left .15s ease;
+    }
+
+    .switch input:checked{
+      background: rgba(22,163,74,.18);
+      border-color: rgba(22,163,74,.35);
+    }
+
+    .switch input:checked::after{
+      left:22px;
+      border-color: rgba(22,163,74,.45);
+    }
+
+    .switch .hintText{
+      font-size:12px;
+      color: var(--muted);
+      white-space:nowrap;
+    }
+
     .rangeTabs{
       display:flex;
       gap:26px;
@@ -94,6 +164,7 @@
       width:auto;
       color:#111;
     }
+
     .rangeTabs button.active{
       color:var(--accent);
       border-bottom-color:var(--accent);
@@ -314,1363 +385,1408 @@
 <body>
   <div id="cashflow-app"></div>
 
-<script>
-class CashflowTrajectory {
-  constructor(mount, options = {}) {
-    this.mount = typeof mount === "string" ? document.querySelector(mount) : mount;
-    if (!this.mount) throw new Error("Mount element not found.");
-
-    this.onUpdate = typeof options.onUpdate === "function" ? options.onUpdate : null;
-
-    const baseDefaults = {
-      startDate: "2026-01-01",
-      endDate: "2026-12-31",
-      todayDate: this.#todayISO(),
-      startingAmount: 0,
-
-      chartRange: "ALL", // 1D,1W,1M,3M,YTD,1Y,ALL
-
-      income: {
-        type: "biweekly",
-        biweekly: { label: "Paycheck", firstPayday: "2026-01-02", amount: 1500 },
-        weekly:   { label: "Paycheck", weekday: "Friday", amount: 750 },
-        irregular: []
-      },
-
-      additionalIncome: [],
-
-      monthlyEvents: [
-        { label: "Rent",        day: 1,  amount: -1000, startDate: "2026-02-01" },
-        { label: "Car payment", day: 15, amount: -700,  startDate: "2026-01-15" }
-      ],
-
-      discretionarySpending: []
-    };
-
-    this.defaults = this.#deepMerge(structuredClone(baseDefaults), options.defaults ?? {});
-    this.state = structuredClone(this.defaults);
-
-    this.chart = null;
-    this.rows = [];
-
-    this.#render();
-    this.update();
-  }
-
-  // ---------- Public API ----------
-  setConfig(partial) {
-    this.state = this.#deepMerge(this.state, partial);
-    this.#syncUIFromState();
-    this.#renderIrregularPayTable();
-    this.#renderMonthlyEventsTable();
-    this.#renderDiscretionaryTable();
-    this.#renderAdditionalIncomeTypeField();
-    this.#renderAdditionalIncomeTable();
-    this.#toggleIncomeUI();
-    this.#refreshProfileDropdown();
-    this.update();
-  }
-
-  getConfig() { return this.#readConfigFromUI(); }
-
-  update() {
-    const ui = this.#refs();
-    try {
-      ui.error.textContent = "";
-      const cfg = this.#readConfigFromUI();
-
-      const rows = this.#buildDataset(cfg);
-      this.rows = rows;
-
-      this.#renderPreview(rows, cfg);
-
-      const chartRows = this.#sliceRowsForChartRange(rows, cfg);
-      this.#renderChart(chartRows, cfg);
-
-      if (this.onUpdate) this.onUpdate(rows, cfg);
-    } catch (err) {
-      ui.error.textContent = String(err?.message ?? err);
-    }
-  }
-
-  // ---------- Render ----------
-  #render() {
-    this.mount.innerHTML = `
-      <nav class="mobileTabs" role="tablist" aria-label="Navigation">
-        <button type="button" class="mTab active" data-tab="chart">Chart</button>
-        <button type="button" class="mTab" data-tab="configure">Configure</button>
-        <button type="button" class="mTab" data-tab="profiles">Profiles</button>
-      </nav>
-
-      <div class="dashboard">
-        <!-- LEFT -->
-        <section id="panel-chart">
-          <div class="mainTitle">Financial Wellness Trajectory</div>
-
-          <div class="bigValue" id="cf-balanceBig">$0.00</div>
-          <div class="deltaRow">
-            <span id="cf-deltaToday" class="deltaUp">▲ $0.00</span>
-            <span>Today</span>
-          </div>
-
-          <div class="chartWrap">
-            <canvas id="cf-chart" height="120"></canvas>
-          </div>
-
-          <div class="rangeTabs" id="cf-rangeTabs">
-            <button type="button" data-range="1D">1D</button>
-            <button type="button" data-range="1W">1W</button>
-            <button type="button" data-range="1M">1M</button>
-            <button type="button" data-range="3M">3M</button>
-            <button type="button" data-range="YTD">YTD</button>
-            <button type="button" data-range="1Y">1Y</button>
-            <button type="button" data-range="ALL">ALL</button>
-          </div>
-
-          <div class="hint" id="cf-summary" style="margin-top:14px;"></div>
-          <div class="scrollBox">
-            <pre id="cf-preview"></pre>
-          </div>
-        </section>
-
-        <!-- RIGHT SIDEBAR -->
-        <aside class="sidebar">
-          <div class="sidebarTop">
-            <div>Monthly Configurations</div>
-            <div style="font-size:24px; font-weight:900;">+</div>
-          </div>
-
-          <!-- CONFIGURE PANEL -->
-          <section id="panel-configure">
-
-            <div class="accItem open">
-              <button class="accBtn" type="button">PRIMARY INCOME <span>⌄</span></button>
-              <div class="accPanel">
-
-                <div class="row">
-                  <div>
-                    <label>Start date</label>
-                    <input id="cf-startDate" type="date" />
-                  </div>
-                  <div>
-                    <label>End date</label>
-                    <input id="cf-endDate" type="date" />
-                  </div>
-                </div>
-
-                <div class="row">
-                  <div>
-                    <label>Starting balance ($)</label>
-                    <input id="cf-startingAmount" type="number" step="100" />
-                  </div>
-                  <div>
-                    <label>Today’s date</label>
-                    <input id="cf-todayDate" type="date" />
-                    <div class="hint">Ends range windows on this date.</div>
-                  </div>
-                </div>
-
-                <hr />
-
-                <h4 style="margin:0;">Income <span class="pill" id="cf-incomePill"></span></h4>
-                <div class="hint">Choose how you get paid. The chart updates automatically.</div>
-
-                <div class="radioGroup" style="margin-top:10px;">
-                  <label><input type="radio" name="cf-incomeType" value="biweekly" /> Bi-weekly paycheck</label>
-                  <label><input type="radio" name="cf-incomeType" value="weekly" /> Weekly paycheck</label>
-                  <label><input type="radio" name="cf-incomeType" value="irregular" /> Paid per job / irregular income</label>
-                </div>
-
-                <div id="cf-income-biweekly" style="margin-top:12px;">
-                  <div>
-                    <label>Pay label</label>
-                    <input id="cf-biweeklyLabel" type="text" placeholder="e.g. Paycheck" />
-                  </div>
-                  <div class="row">
-                    <div>
-                      <label>First paycheck date</label>
-                      <input id="cf-biweeklyDate" type="date" />
-                      <div class="hint">Every 14 days after this date is a payday.</div>
-                    </div>
-                    <div>
-                      <label>Paycheck amount</label>
-                      <input id="cf-biweeklyAmount" type="number" step="50" />
-                    </div>
-                  </div>
-                </div>
-
-                <div id="cf-income-weekly" style="display:none; margin-top:12px;">
-                  <div>
-                    <label>Pay label</label>
-                    <input id="cf-weeklyLabel" type="text" placeholder="e.g. Paycheck" />
-                  </div>
-                  <div class="row">
-                    <div>
-                      <label>Paid on</label>
-                      <select id="cf-weeklyDay">
-                        <option>Monday</option><option>Tuesday</option><option>Wednesday</option>
-                        <option>Thursday</option><option>Friday</option>
-                        <option>Saturday</option><option>Sunday</option>
-                      </select>
-                    </div>
-                    <div>
-                      <label>Weekly pay amount</label>
-                      <input id="cf-weeklyAmount" type="number" step="50" />
-                    </div>
-                  </div>
-                </div>
-
-                <div id="cf-income-irregular" style="display:none; margin-top:12px;">
-                  <div>
-                    <label>Description</label>
-                    <input id="cf-irregLabel" type="text" placeholder="e.g. Client A – Website, Bonus" />
-                  </div>
-                  <div class="row">
-                    <div>
-                      <label>Pay date</label>
-                      <input id="cf-irregDate" type="date" />
-                    </div>
-                    <div>
-                      <label>Amount</label>
-                      <input id="cf-irregAmount" type="number" step="50" />
-                    </div>
-                  </div>
-
-                  <div class="btnRow" style="margin-top:10px;">
-                    <button id="cf-addPayBtn" type="button">Add paycheck</button>
-                    <button id="cf-clearPaysBtn" class="btnSecondary" type="button">Clear list</button>
-                  </div>
-
-                  <table>
-                    <thead>
-                      <tr>
-                        <th class="tblLabelCell">Description</th>
-                        <th style="width:170px;">Date</th>
-                        <th class="tblAmtCell">Amount</th>
-                        <th class="tblActCell">Action</th>
-                      </tr>
-                    </thead>
-                    <tbody id="cf-payTable"></tbody>
-                  </table>
-                  <div class="hint">Tip: Add as many upcoming jobs/checks as you want.</div>
-                </div>
-
-              </div>
-            </div>
-
-            <div class="accItem">
-              <button class="accBtn" type="button">ADDITIONAL INCOME ITEMS <span>⌄</span></button>
-              <div class="accPanel">
-
-                <div class="hint">Add extra income sources in addition to your main paycheck.</div>
-
-                <div class="row">
-                  <div>
-                    <label>Label</label>
-                    <input id="cf-aiLabel" type="text" placeholder="e.g. Side gig, Bonus, Reimbursement" />
-                  </div>
-                  <div>
-                    <label>Amount</label>
-                    <input id="cf-aiAmount" type="number" step="50" placeholder="e.g. 250" />
-                  </div>
-                </div>
-
-                <div class="row">
-                  <div>
-                    <label>Type</label>
-                    <select id="cf-aiType">
-                      <option value="one_time">One-time (date)</option>
-                      <option value="weekly">Weekly (weekday)</option>
-                      <option value="monthly">Monthly (day of month)</option>
-                    </select>
-                  </div>
-                  <div id="cf-aiTypeField"></div>
-                </div>
-
-                <div class="btnRow">
-                  <button id="cf-aiAddBtn" type="button">Add income item</button>
-                  <button id="cf-aiClearBtn" class="btnSecondary" type="button">Clear items</button>
-                </div>
-
-                <table>
-                  <thead>
-                    <tr>
-                      <th class="tblLabelCell">Label</th>
-                      <th class="tblAmtCell">Amount</th>
-                      <th style="width:160px;">Type</th>
-                      <th style="width:220px;">Rule</th>
-                      <th class="tblActCell">Action</th>
-                    </tr>
-                  </thead>
-                  <tbody id="cf-aiTable"></tbody>
-                </table>
-
-              </div>
-            </div>
-
-            <div class="accItem">
-              <button class="accBtn" type="button">FIXED EXPENSES <span>⌄</span></button>
-              <div class="accPanel">
-
-                <div class="hint">Add recurring monthly debits/credits (rent, subscriptions, transfers, etc.).</div>
-
-                <div>
-                  <label>Event label</label>
-                  <input id="cf-newEventLabel" type="text" placeholder="e.g. Rent, Car payment" />
-                </div>
-
-                <div class="row">
-                  <div>
-                    <label>Day of month</label>
-                    <input id="cf-newEventDay" type="number" min="1" max="31" value="15" />
-                  </div>
-                  <div>
-                    <label>Amount (+ deposit / - debit)</label>
-                    <input id="cf-newEventAmount" type="number" step="50" value="-700" />
-                  </div>
-                </div>
-
-                <div class="row">
-                  <div>
-                    <label>Start date</label>
-                    <input id="cf-newEventStart" type="date" />
-                  </div>
-                  <div style="display:flex; align-items:end;">
-                    <button id="cf-addEventBtn" type="button">Add event</button>
-                  </div>
-                </div>
-
-                <table>
-                  <thead>
-                    <tr>
-                      <th class="tblLabelCell">Label</th>
-                      <th class="tblDayCell">Day</th>
-                      <th class="tblAmtCell">Amount</th>
-                      <th class="tblDateCell">Start date</th>
-                      <th class="tblActCell">Action</th>
-                    </tr>
-                  </thead>
-                  <tbody id="cf-eventsTbody"></tbody>
-                </table>
-
-              </div>
-            </div>
-
-            <div class="accItem">
-              <button class="accBtn" type="button">DISCRETIONARY SPENDING <span>⌄</span></button>
-              <div class="accPanel">
-
-                <div class="hint">Add recurring monthly “budget spending” items (groceries, gas, eating out, etc.).</div>
-
-                <div>
-                  <label>Category label</label>
-                  <input id="cf-newSpendLabel" type="text" placeholder="e.g. Groceries, Gas, Restaurants" />
-                </div>
-
-                <div class="row">
-                  <div>
-                    <label>Day of month</label>
-                    <input id="cf-newSpendDay" type="number" min="1" max="31" value="1" />
-                  </div>
-                  <div>
-                    <label>Amount (use negative for spending)</label>
-                    <input id="cf-newSpendAmount" type="number" step="50" value="-300" />
-                  </div>
-                </div>
-
-                <div class="row">
-                  <div>
-                    <label>Start date</label>
-                    <input id="cf-newSpendStart" type="date" />
-                  </div>
-                  <div style="display:flex; align-items:end;">
-                    <button id="cf-addSpendBtn" type="button">Add category</button>
-                  </div>
-                </div>
-
-                <table>
-                  <thead>
-                    <tr>
-                      <th class="tblLabelCell">Label</th>
-                      <th class="tblDayCell">Day</th>
-                      <th class="tblAmtCell">Amount</th>
-                      <th class="tblDateCell">Start date</th>
-                      <th class="tblActCell">Action</th>
-                    </tr>
-                  </thead>
-                  <tbody id="cf-spendTbody"></tbody>
-                </table>
-
-              </div>
-            </div>
-
-          </section>
-
-          <!-- PROFILES PANEL -->
-          <section id="panel-profiles">
-            <div class="accItem">
-              <button class="accBtn" type="button">SAVED PROFILES <span>⌄</span></button>
-              <div class="accPanel">
-
-                <div class="row">
-                  <div>
-                    <label for="cf-profileName">Profile name</label>
-                    <input id="cf-profileName" type="text" placeholder="e.g. Baseline, Paycheck v2" />
-                  </div>
-                  <div>
-                    <label for="cf-profileSelect">Saved profiles</label>
-                    <select id="cf-profileSelect">
-                      <option value="">(none saved)</option>
-                    </select>
-                  </div>
-                </div>
-
-                <div class="btnRow">
-                  <button id="cf-saveProfileBtn" type="button">Save profile</button>
-                  <button id="cf-loadProfileBtn" type="button" class="btnSecondary">Load</button>
-                  <button id="cf-deleteProfileBtn" type="button" class="btnSecondary">Delete</button>
-                </div>
-
-                <div class="btnRow">
-                  <button id="cf-runBtn" type="button">Generate Chart</button>
-                  <button id="cf-resetBtn" type="button" class="btnSecondary">Reset</button>
-                </div>
-
-                <div id="cf-error" class="error"></div>
-              </div>
-            </div>
-          </section>
-
-        </aside>
-      </div>
-    `;
-
-    // Post-render routines
-    this.#syncUIFromState();
-    this.#renderIrregularPayTable();
-    this.#renderMonthlyEventsTable();
-    this.#renderDiscretionaryTable();
-    this.#renderAdditionalIncomeTypeField();
-    this.#renderAdditionalIncomeTable();
-    this.#wireEvents();
-    this.#toggleIncomeUI();
-    this.#refreshProfileDropdown();
-  }
-
-  // ---------- Events ----------
-  #wireEvents() {
-    // Mobile top tabs
-    const tabButtons = Array.from(this.mount.querySelectorAll(".mobileTabs .mTab"));
-    const setMobileTab = (name) => {
-      document.body.dataset.mobiletab = name;
-      tabButtons.forEach(b => b.classList.toggle("active", b.dataset.tab === name));
-    };
-
-    if (!document.body.dataset.mobiletab) setMobileTab("chart");
-
-    tabButtons.forEach(btn => {
-      btn.addEventListener("click", () => setMobileTab(btn.dataset.tab));
-    });
-
-    const ui = this.#refs();
-
-    // Accordion open/close
-    this.mount.querySelectorAll(".accBtn").forEach(btn => {
-      btn.addEventListener("click", () => {
-        const item = btn.closest(".accItem");
-        if (!item) return;
-        item.classList.toggle("open");
-      });
-    });
-
-    // Range tabs
-    this.mount.querySelectorAll("#cf-rangeTabs button").forEach(b => {
-      b.addEventListener("click", () => {
-        const r = b.dataset.range;
-        this.state.chartRange = r;
-
-        this.mount.querySelectorAll("#cf-rangeTabs button").forEach(x => x.classList.remove("active"));
-        b.classList.add("active");
-
+  <script>
+    class CashflowTrajectory {
+      constructor(mount, options = {}) {
+        this.mount = typeof mount === "string" ? document.querySelector(mount) : mount;
+        if (!this.mount) throw new Error("Mount element not found.");
+
+        this.onUpdate = typeof options.onUpdate === "function" ? options.onUpdate : null;
+
+        const baseDefaults = {
+          startDate: "2026-01-01",
+          endDate: "2026-12-31",
+          todayDate: this.#todayISO(),
+          startingAmount: 0,
+
+          chartRange: "ALL", // 1D,1W,1M,3M,YTD,1Y,ALL
+          showFuture: false, // toggle: projection vs actual-to-date only
+
+          income: {
+            type: "biweekly",
+            biweekly: { label: "Paycheck", firstPayday: "2026-01-02", amount: 1500 },
+            weekly:   { label: "Paycheck", weekday: "Friday", amount: 750 },
+            irregular: []
+          },
+
+          additionalIncome: [],
+
+          monthlyEvents: [
+            { label: "Rent",        day: 1,  amount: -1000, startDate: "2026-02-01" },
+            { label: "Car payment", day: 15, amount: -700,  startDate: "2026-01-15" }
+          ],
+
+          discretionarySpending: []
+        };
+
+        this.defaults = this.#deepMerge(structuredClone(baseDefaults), options.defaults ?? {});
+        this.state = structuredClone(this.defaults);
+
+        this.chart = null;
+        this.rows = [];
+
+        this.#render();
         this.update();
-      });
-    });
+      }
 
-    [ui.startDate, ui.endDate, ui.todayDate, ui.startingAmount].forEach(el =>
-      el.addEventListener("change", () => this.update())
-    );
-
-    ui.incomeRadios.forEach(r => {
-      r.addEventListener("change", () => {
-        this.state.income.type = r.value;
-        this.#toggleIncomeUI();
-        this.update();
-      });
-    });
-
-    [ui.biweeklyLabel, ui.biweeklyDate, ui.biweeklyAmount].forEach(el =>
-      el.addEventListener("change", () => this.update())
-    );
-
-    [ui.weeklyLabel, ui.weeklyDay, ui.weeklyAmount].forEach(el =>
-      el.addEventListener("change", () => this.update())
-    );
-
-    ui.addPayBtn.addEventListener("click", () => {
-      try { ui.error.textContent = ""; this.#addIrregularPayFromInputs(); this.update(); }
-      catch (err) { ui.error.textContent = String(err?.message ?? err); }
-    });
-
-    ui.clearPaysBtn.addEventListener("click", () => {
-      this.state.income.irregular = [];
-      this.#renderIrregularPayTable();
-      this.update();
-    });
-
-    ui.payTableBody.addEventListener("click", (e) => {
-      const btn = e.target;
-      if (btn?.dataset?.action !== "removePay") return;
-      const idx = Number(btn.dataset.idx);
-      if (!Number.isFinite(idx)) return;
-      this.state.income.irregular.splice(idx, 1);
-      this.#renderIrregularPayTable();
-      this.update();
-    });
-
-    // Additional Income UI
-    ui.aiType.addEventListener("change", () => this.#renderAdditionalIncomeTypeField());
-
-    ui.aiAddBtn.addEventListener("click", () => {
-      try { ui.error.textContent = ""; this.#addAdditionalIncomeFromInputs(); this.update(); }
-      catch (err) { ui.error.textContent = String(err?.message ?? err); }
-    });
-
-    ui.aiClearBtn.addEventListener("click", () => {
-      this.state.additionalIncome = [];
-      this.#renderAdditionalIncomeTable();
-      this.update();
-    });
-
-    ui.aiTable.addEventListener("click", (e) => {
-      const btn = e.target;
-      if (btn?.dataset?.action !== "aiRemove") return;
-      const idx = Number(btn.dataset.idx);
-      if (!Number.isFinite(idx)) return;
-      this.state.additionalIncome.splice(idx, 1);
-      this.#renderAdditionalIncomeTable();
-      this.update();
-    });
-
-    // Fixed expenses
-    ui.addEventBtn.addEventListener("click", () => {
-      try { ui.error.textContent = ""; this.#addMonthlyEventFromInputs(); this.#renderMonthlyEventsTable(); this.update(); }
-      catch (err) { ui.error.textContent = String(err?.message ?? err); }
-    });
-
-    ui.eventsTbody.addEventListener("change", (e) => {
-      const el = e.target;
-      const idx = Number(el?.dataset?.idx);
-      const field = el?.dataset?.field;
-      if (!Number.isFinite(idx) || !field) return;
-
-      const ev = this.state.monthlyEvents[idx];
-      if (!ev) return;
-
-      if (field === "label") ev.label = el.value;
-      if (field === "day") ev.day = Number(el.value);
-      if (field === "amount") ev.amount = Number(el.value);
-      if (field === "startDate") ev.startDate = el.value;
-
-      this.update();
-    });
-
-    ui.eventsTbody.addEventListener("click", (e) => {
-      const btn = e.target;
-      if (btn?.dataset?.action !== "removeEvent") return;
-      const idx = Number(btn.dataset.idx);
-      if (!Number.isFinite(idx)) return;
-      this.state.monthlyEvents.splice(idx, 1);
-      this.#renderMonthlyEventsTable();
-      this.update();
-    });
-
-    // Discretionary spending
-    ui.addSpendBtn?.addEventListener("click", () => {
-      try {
-        ui.error.textContent = "";
-        this.#addDiscretionaryFromInputs();
+      // ---------- Public API ----------
+      setConfig(partial) {
+        this.state = this.#deepMerge(this.state, partial);
+        this.#syncUIFromState();
+        this.#renderIrregularPayTable();
+        this.#renderMonthlyEventsTable();
         this.#renderDiscretionaryTable();
+        this.#renderAdditionalIncomeTypeField();
+        this.#renderAdditionalIncomeTable();
+        this.#toggleIncomeUI();
+        this.#refreshProfileDropdown();
         this.update();
-      } catch (err) {
-        ui.error.textContent = String(err?.message ?? err);
-      }
-    });
-
-    ui.spendTbody?.addEventListener("change", (e) => {
-      const el = e.target;
-      const idx = Number(el?.dataset?.idx);
-      const field = el?.dataset?.field;
-      if (!Number.isFinite(idx) || !field) return;
-
-      const it = this.state.discretionarySpending[idx];
-      if (!it) return;
-
-      if (field === "label") it.label = el.value;
-      if (field === "day") it.day = Number(el.value);
-      if (field === "amount") it.amount = Number(el.value);
-      if (field === "startDate") it.startDate = el.value;
-
-      this.update();
-    });
-
-    ui.spendTbody?.addEventListener("click", (e) => {
-      const btn = e.target;
-      if (btn?.dataset?.action !== "removeSpend") return;
-      const idx = Number(btn.dataset.idx);
-      if (!Number.isFinite(idx)) return;
-
-      this.state.discretionarySpending.splice(idx, 1);
-      this.#renderDiscretionaryTable();
-      this.update();
-    });
-
-    // Profiles
-    ui.profileSelect?.addEventListener("change", () => {
-      if (ui.profileName) ui.profileName.value = ui.profileSelect.value || "";
-    });
-
-    ui.saveProfileBtn?.addEventListener("click", () => {
-      try {
-        ui.error.textContent = "";
-        this.#saveProfile(ui.profileName?.value);
-        const n = (ui.profileName?.value ?? "").trim();
-        if (n) ui.profileSelect.value = n;
-      } catch (err) {
-        ui.error.textContent = String(err?.message ?? err);
-      }
-    });
-
-    ui.loadProfileBtn?.addEventListener("click", () => {
-      try { ui.error.textContent = ""; this.#loadProfile(ui.profileSelect?.value); }
-      catch (err) { ui.error.textContent = String(err?.message ?? err); }
-    });
-
-    ui.deleteProfileBtn?.addEventListener("click", () => {
-      try {
-        ui.error.textContent = "";
-        this.#deleteProfile(ui.profileSelect?.value);
-        if (ui.profileName) ui.profileName.value = "";
-      } catch (err) {
-        ui.error.textContent = String(err?.message ?? err);
-      }
-    });
-
-    ui.runBtn.addEventListener("click", () => this.update());
-    ui.resetBtn.addEventListener("click", () => {
-      this.state = structuredClone(this.defaults);
-      this.#syncUIFromState();
-      this.#renderIrregularPayTable();
-      this.#renderMonthlyEventsTable();
-      this.#renderDiscretionaryTable();
-      this.#renderAdditionalIncomeTypeField();
-      this.#renderAdditionalIncomeTable();
-      this.#toggleIncomeUI();
-      this.#refreshProfileDropdown();
-      this.update();
-    });
-  }
-
-  #toggleIncomeUI() {
-    const ui = this.#refs();
-    const type = this.state.income.type;
-
-    ui.incomePill.textContent = type === "biweekly" ? "Bi-weekly" : (type === "weekly" ? "Weekly" : "Irregular");
-    ui.sectionBiweekly.style.display = type === "biweekly" ? "" : "none";
-    ui.sectionWeekly.style.display   = type === "weekly"   ? "" : "none";
-    ui.sectionIrregular.style.display= type === "irregular" ? "" : "none";
-    ui.incomeRadios.forEach(r => r.checked = (r.value === type));
-  }
-
-  // ---------- Saved Profiles ----------
-  #profileKey(name) { return `cf_profile_v1:${name}`; }
-
-  #listProfiles() {
-    return Object.keys(localStorage)
-      .filter(k => k.startsWith("cf_profile_v1:"))
-      .map(k => k.replace("cf_profile_v1:", ""))
-      .sort((a, b) => a.localeCompare(b));
-  }
-
-  #refreshProfileDropdown() {
-    const ui = this.#refs();
-    if (!ui.profileSelect) return;
-
-    const names = this.#listProfiles();
-    ui.profileSelect.innerHTML = names.length
-      ? names.map(n => `<option value="${this.#escapeAttr(n)}">${this.#escapeHtml(n)}</option>`).join("")
-      : `<option value="">(none saved)</option>`;
-  }
-
-  #saveProfile(name) {
-    const n = String(name ?? "").trim();
-    if (!n) throw new Error("Profile name is required.");
-    const cfg = this.getConfig();
-    localStorage.setItem(this.#profileKey(n), JSON.stringify(cfg));
-    this.#refreshProfileDropdown();
-  }
-
-  #loadProfile(name) {
-    const n = String(name ?? "").trim();
-    if (!n) throw new Error("Choose a profile to load.");
-    const raw = localStorage.getItem(this.#profileKey(n));
-    if (!raw) throw new Error("Profile not found.");
-    const cfg = JSON.parse(raw);
-    this.setConfig(cfg);
-  }
-
-  #deleteProfile(name) {
-    const n = String(name ?? "").trim();
-    if (!n) throw new Error("Choose a profile to delete.");
-    localStorage.removeItem(this.#profileKey(n));
-    this.#refreshProfileDropdown();
-  }
-
-  // ---------- Irregular Income ----------
-  #addIrregularPayFromInputs() {
-    const ui = this.#refs();
-    const label = ui.irregLabel.value.trim() || "Income";
-    const date = ui.irregDate.value;
-    const amount = Number(ui.irregAmount.value);
-
-    if (!date) throw new Error("Pay date is required.");
-    if (!Number.isFinite(amount)) throw new Error("Pay amount must be a number.");
-
-    this.state.income.irregular.push({ label, date, amount });
-    this.state.income.irregular.sort((a, b) => a.date.localeCompare(b.date));
-
-    ui.irregLabel.value = "";
-    ui.irregAmount.value = "";
-    this.#renderIrregularPayTable();
-  }
-
-  #renderIrregularPayTable() {
-    const ui = this.#refs();
-    const pays = this.state.income.irregular ?? [];
-
-    if (!pays.length) {
-      ui.payTableBody.innerHTML = `<tr><td colspan="4" class="small">No paychecks added yet.</td></tr>`;
-      return;
-    }
-
-    ui.payTableBody.innerHTML = pays.map((p, idx) => `
-      <tr>
-        <td class="tblLabelCell">${this.#escapeHtml(p.label)}</td>
-        <td>${this.#escapeHtml(p.date)}</td>
-        <td>$${Number(p.amount).toLocaleString()}</td>
-        <td><button type="button" data-action="removePay" data-idx="${idx}">Remove</button></td>
-      </tr>
-    `).join("");
-  }
-
-  // ---------- Additional Income ----------
-  #renderAdditionalIncomeTypeField() {
-    const ui = this.#refs();
-    const type = ui.aiType.value;
-
-    if (type === "one_time") {
-      ui.aiTypeField.innerHTML = `
-        <label>Date</label>
-        <input id="cf-aiDate" type="date" />
-      `;
-    } else if (type === "weekly") {
-      ui.aiTypeField.innerHTML = `
-        <label>Weekday + start date</label>
-        <div class="row">
-          <select id="cf-aiWeekday">
-            <option>Monday</option><option>Tuesday</option><option>Wednesday</option>
-            <option>Thursday</option><option>Friday</option><option>Saturday</option><option>Sunday</option>
-          </select>
-          <input id="cf-aiStart" type="date" />
-        </div>
-      `;
-    } else {
-      ui.aiTypeField.innerHTML = `
-        <label>Day of month + start date</label>
-        <div class="row">
-          <input id="cf-aiDay" type="number" min="1" max="31" value="1" />
-          <input id="cf-aiStart" type="date" />
-        </div>
-      `;
-    }
-
-    const dateEl = this.mount.querySelector("#cf-aiDate");
-    const startEl = this.mount.querySelector("#cf-aiStart");
-    if (dateEl && !dateEl.value) dateEl.value = ui.startDate.value;
-    if (startEl && !startEl.value) startEl.value = ui.startDate.value;
-  }
-
-  #addAdditionalIncomeFromInputs() {
-    const ui = this.#refs();
-    const label = ui.aiLabel.value.trim() || "Additional income";
-    const amount = Number(ui.aiAmount.value);
-    const type = ui.aiType.value;
-
-    if (!Number.isFinite(amount)) throw new Error("Additional income amount must be a number.");
-
-    if (type === "one_time") {
-      const date = this.mount.querySelector("#cf-aiDate")?.value;
-      if (!date) throw new Error("One-time income requires a date.");
-      this.state.additionalIncome.push({ label, type, amount, date });
-    } else if (type === "weekly") {
-      const weekday = this.mount.querySelector("#cf-aiWeekday")?.value;
-      const startDate = this.mount.querySelector("#cf-aiStart")?.value;
-      if (!weekday || !startDate) throw new Error("Weekly income requires weekday and start date.");
-      this.state.additionalIncome.push({ label, type, amount, weekday, startDate });
-    } else {
-      const day = Number(this.mount.querySelector("#cf-aiDay")?.value);
-      const startDate = this.mount.querySelector("#cf-aiStart")?.value;
-      if (!Number.isFinite(day) || day < 1 || day > 31) throw new Error("Monthly income day must be 1–31.");
-      if (!startDate) throw new Error("Monthly income requires a start date.");
-      this.state.additionalIncome.push({ label, type, amount, day, startDate });
-    }
-
-    ui.aiLabel.value = "";
-    ui.aiAmount.value = "";
-    this.#renderAdditionalIncomeTable();
-  }
-
-  #renderAdditionalIncomeTable() {
-    const ui = this.#refs();
-    const items = this.state.additionalIncome ?? [];
-
-    if (!items.length) {
-      ui.aiTable.innerHTML = `<tr><td colspan="5" class="small">No additional income items.</td></tr>`;
-      return;
-    }
-
-    ui.aiTable.innerHTML = items.map((it, idx) => {
-      const rule =
-        it.type === "one_time" ? it.date :
-        it.type === "weekly" ? `${it.weekday} (from ${it.startDate})` :
-        `Day ${it.day} (from ${it.startDate})`;
-
-      return `
-        <tr>
-          <td class="tblLabelCell">${this.#escapeHtml(it.label)}</td>
-          <td class="tblAmtCell">$${Number(it.amount).toLocaleString()}</td>
-          <td>${this.#escapeHtml(it.type)}</td>
-          <td>${this.#escapeHtml(rule)}</td>
-          <td class="tblActCell">
-            <button type="button" data-action="aiRemove" data-idx="${idx}">Remove</button>
-          </td>
-        </tr>
-      `;
-    }).join("");
-  }
-
-  // ---------- Monthly Events ----------
-  #addMonthlyEventFromInputs() {
-    const ui = this.#refs();
-    const label = ui.newEventLabel.value.trim() || "Monthly event";
-    const day = Number(ui.newEventDay.value);
-    const amount = Number(ui.newEventAmount.value);
-    const startDate = ui.newEventStart.value;
-
-    if (!Number.isFinite(day) || day < 1 || day > 31) throw new Error("Monthly event day must be 1–31.");
-    if (!Number.isFinite(amount)) throw new Error("Monthly event amount must be a number.");
-    if (!startDate) throw new Error("Monthly event start date is required.");
-
-    this.state.monthlyEvents.push({ label, day, amount, startDate });
-    ui.newEventLabel.value = "";
-  }
-
-  #renderMonthlyEventsTable() {
-    const ui = this.#refs();
-    const events = this.state.monthlyEvents ?? [];
-
-    if (!events.length) {
-      ui.eventsTbody.innerHTML = `<tr><td colspan="5" class="small">No monthly events yet. Add one above.</td></tr>`;
-      return;
-    }
-
-    ui.eventsTbody.innerHTML = events.map((ev, idx) => `
-      <tr>
-        <td class="tblLabelCell">
-          <input class="tblLabelInput" data-idx="${idx}" data-field="label" type="text"
-                 value="${this.#escapeAttr(ev.label)}" />
-        </td>
-        <td class="tblDayCell">
-          <input data-idx="${idx}" data-field="day" type="number" min="1" max="31"
-                 value="${Number(ev.day)}" />
-        </td>
-        <td class="tblAmtCell">
-          <input data-idx="${idx}" data-field="amount" type="number" step="50"
-                 value="${Number(ev.amount)}" />
-        </td>
-        <td class="tblDateCell">
-          <input data-idx="${idx}" data-field="startDate" type="date"
-                 value="${this.#escapeAttr(ev.startDate)}" />
-        </td>
-        <td class="tblActCell">
-          <button type="button" data-action="removeEvent" data-idx="${idx}">Remove</button>
-        </td>
-      </tr>
-    `).join("");
-  }
-
-  // ---------- Discretionary Spending ----------
-  #addDiscretionaryFromInputs() {
-    const ui = this.#refs();
-    const label = ui.newSpendLabel.value.trim() || "Discretionary spending";
-    const day = Number(ui.newSpendDay.value);
-    const amount = Number(ui.newSpendAmount.value);
-    const startDate = ui.newSpendStart.value;
-
-    if (!Number.isFinite(day) || day < 1 || day > 31) throw new Error("Spending day must be 1–31.");
-    if (!Number.isFinite(amount)) throw new Error("Spending amount must be a number.");
-    if (!startDate) throw new Error("Spending start date is required.");
-
-    this.state.discretionarySpending.push({ label, day, amount, startDate });
-    ui.newSpendLabel.value = "";
-  }
-
-  #renderDiscretionaryTable() {
-    const ui = this.#refs();
-    const items = this.state.discretionarySpending ?? [];
-    if (!ui.spendTbody) return;
-
-    if (!items.length) {
-      ui.spendTbody.innerHTML = `<tr><td colspan="5" class="small">No discretionary categories yet. Add one above.</td></tr>`;
-      return;
-    }
-
-    ui.spendTbody.innerHTML = items.map((it, idx) => `
-      <tr>
-        <td class="tblLabelCell">
-          <input class="tblLabelInput" data-idx="${idx}" data-field="label" type="text"
-                 value="${this.#escapeAttr(it.label)}" />
-        </td>
-        <td class="tblDayCell">
-          <input data-idx="${idx}" data-field="day" type="number" min="1" max="31"
-                 value="${Number(it.day)}" />
-        </td>
-        <td class="tblAmtCell">
-          <input data-idx="${idx}" data-field="amount" type="number" step="50"
-                 value="${Number(it.amount)}" />
-        </td>
-        <td class="tblDateCell">
-          <input data-idx="${idx}" data-field="startDate" type="date"
-                 value="${this.#escapeAttr(it.startDate)}" />
-        </td>
-        <td class="tblActCell">
-          <button type="button" data-action="removeSpend" data-idx="${idx}">Remove</button>
-        </td>
-      </tr>
-    `).join("");
-  }
-
-  // ---------- Dataset Engine ----------
-  #buildDataset(cfg) {
-    const start = this.#parseISO(cfg.startDate);
-    const end = this.#parseISO(cfg.endDate);
-    if (end < start) throw new Error("End date must be on/after start date.");
-    const today = this.#parseISO(cfg.todayDate);
-
-    let balance = Number(cfg.startingAmount);
-    if (!Number.isFinite(balance)) throw new Error("Starting amount must be a number.");
-
-    const monthlyEvents = (cfg.monthlyEvents ?? []).map((ev, i) => {
-      const label = String(ev.label ?? "Monthly event");
-      const day = Number(ev.day);
-      const amount = Number(ev.amount);
-      const startDate = this.#parseISO(ev.startDate);
-
-      if (!Number.isFinite(day) || day < 1 || day > 31) throw new Error(`Monthly event #${i + 1}: day must be 1–31.`);
-      if (!Number.isFinite(amount)) throw new Error(`Monthly event #${i + 1}: amount must be a number.`);
-      return { label, day, amount, startDate };
-    });
-
-    const discretionary = (cfg.discretionarySpending ?? []).map((ev, i) => {
-      const label = String(ev.label ?? "Discretionary spending");
-      const day = Number(ev.day);
-      const amount = Number(ev.amount);
-      const startDate = this.#parseISO(ev.startDate);
-
-      if (!Number.isFinite(day) || day < 1 || day > 31) throw new Error(`Discretionary item #${i + 1}: day must be 1–31.`);
-      if (!Number.isFinite(amount)) throw new Error(`Discretionary item #${i + 1}: amount must be a number.`);
-      return { label, day, amount, startDate };
-    });
-
-    const irregularMap = this.#irregularPaysToMap(cfg.income.irregular);
-
-    const rows = [];
-    for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
-      const cur = new Date(d);
-      const curISO = this.#toISODate(cur);
-      let net = 0;
-      const reasons = [];
-
-      // Primary paycheck
-      if (cfg.income.type === "biweekly") {
-        const label = (cfg.income.biweekly.label || "Paycheck").trim() || "Paycheck";
-        const fp = this.#parseISO(cfg.income.biweekly.firstPayday);
-        const amt = Number(cfg.income.biweekly.amount);
-        if (!Number.isFinite(amt)) throw new Error("Bi-weekly paycheck amount must be a number.");
-
-        if (cur >= fp) {
-          const diffDays = Math.floor((cur - fp) / 86400000);
-          if (diffDays % 14 === 0) { net += amt; reasons.push(`${label}: +${amt}`); }
-        }
-      } else if (cfg.income.type === "weekly") {
-        const label = (cfg.income.weekly.label || "Paycheck").trim() || "Paycheck";
-        const amt = Number(cfg.income.weekly.amount);
-        if (!Number.isFinite(amt)) throw new Error("Weekly pay amount must be a number.");
-
-        if (this.#weekdayName(cur) === cfg.income.weekly.weekday) { net += amt; reasons.push(`${label}: +${amt}`); }
-      } else if (cfg.income.type === "irregular") {
-        const obj = irregularMap.get(curISO);
-        if (obj) { net += obj.total; obj.labels.forEach(s => reasons.push(s)); }
       }
 
-      // Additional income
-      for (const it of (cfg.additionalIncome ?? [])) {
-        if (it.type === "one_time" && curISO === it.date) { net += it.amount; reasons.push(`${it.label}: +${it.amount}`); }
-        if (it.type === "weekly") {
-          if (cur >= this.#parseISO(it.startDate) && this.#weekdayName(cur) === it.weekday) { net += it.amount; reasons.push(`${it.label}: +${it.amount}`); }
-        }
-        if (it.type === "monthly") {
-          if (cur >= this.#parseISO(it.startDate) && cur.getDate() === Number(it.day)) { net += it.amount; reasons.push(`${it.label}: +${it.amount}`); }
+      getConfig() { return this.#readConfigFromUI(); }
+
+      update() {
+        const ui = this.#refs();
+        try {
+          ui.error.textContent = "";
+          const cfg = this.#readConfigFromUI();
+
+          const rows = this.#buildDataset(cfg);
+          this.rows = rows;
+
+          this.#renderPreview(rows, cfg);
+
+          const chartRows = this.#sliceRowsForChartRange(rows, cfg);
+          this.#renderChart(chartRows, cfg);
+
+          if (this.onUpdate) this.onUpdate(rows, cfg);
+        } catch (err) {
+          ui.error.textContent = String(err?.message ?? err);
         }
       }
 
-      // Fixed monthly events
-      for (const ev of monthlyEvents) {
-        if (cur >= ev.startDate && cur.getDate() === ev.day) {
-          net += ev.amount;
-          reasons.push(`${ev.label}: ${ev.amount >= 0 ? "+" : ""}${ev.amount}`);
-        }
+      // ---------- Render ----------
+      #render() {
+        this.mount.innerHTML = `
+          <nav class="mobileTabs" role="tablist" aria-label="Navigation">
+            <button type="button" class="mTab active" data-tab="chart">Chart</button>
+            <button type="button" class="mTab" data-tab="configure">Configure</button>
+            <button type="button" class="mTab" data-tab="profiles">Profiles</button>
+          </nav>
+
+          <div class="dashboard">
+            <!-- LEFT -->
+            <section id="panel-chart">
+              <div class="mainTitle">Financial Wellness Trajectory</div>
+
+              <div class="bigValue" id="cf-balanceBig">$0.00</div>
+              <div class="deltaRow">
+                <span id="cf-deltaToday" class="deltaUp">▲ $0.00</span>
+                <span>Today</span>
+              </div>
+
+              <div class="chartWrap">
+                <canvas id="cf-chart" height="120"></canvas>
+              </div>
+
+              <div class="projectionRow">
+                <div class="label">Show future projection</div>
+                <label class="switch">
+                  <input id="cf-showFuture" type="checkbox" />
+                  <span class="hintText" id="cf-showFutureText">Actual-to-date only</span>
+                </label>
+              </div>
+
+              <div class="rangeTabs" id="cf-rangeTabs">
+                <button type="button" data-range="1D">1D</button>
+                <button type="button" data-range="1W">1W</button>
+                <button type="button" data-range="1M">1M</button>
+                <button type="button" data-range="3M">3M</button>
+                <button type="button" data-range="YTD">YTD</button>
+                <button type="button" data-range="1Y">1Y</button>
+                <button type="button" data-range="ALL">ALL</button>
+              </div>
+
+              <div class="hint" id="cf-summary" style="margin-top:14px;"></div>
+              <div class="scrollBox">
+                <pre id="cf-preview"></pre>
+              </div>
+            </section>
+
+            <!-- RIGHT SIDEBAR -->
+            <aside class="sidebar">
+              <div class="sidebarTop">
+                <div>Monthly Configurations</div>
+                <div style="font-size:24px; font-weight:900;">+</div>
+              </div>
+
+              <!-- CONFIGURE PANEL -->
+              <section id="panel-configure">
+
+                <div class="accItem open">
+                  <button class="accBtn" type="button">PRIMARY INCOME <span>⌄</span></button>
+                  <div class="accPanel">
+
+                    <div class="row">
+                      <div>
+                        <label>Start date</label>
+                        <input id="cf-startDate" type="date" />
+                      </div>
+                      <div>
+                        <label>End date</label>
+                        <input id="cf-endDate" type="date" />
+                      </div>
+                    </div>
+
+                    <div class="row">
+                      <div>
+                        <label>Starting balance ($)</label>
+                        <input id="cf-startingAmount" type="number" step="100" />
+                      </div>
+                      <div>
+                        <label>Today’s date</label>
+                        <input id="cf-todayDate" type="date" />
+                        <div class="hint">Ends range windows on this date.</div>
+                      </div>
+                    </div>
+
+                    <hr />
+
+                    <h4 style="margin:0;">Income <span class="pill" id="cf-incomePill"></span></h4>
+                    <div class="hint">Choose how you get paid. The chart updates automatically.</div>
+
+                    <div class="radioGroup" style="margin-top:10px;">
+                      <label><input type="radio" name="cf-incomeType" value="biweekly" /> Bi-weekly paycheck</label>
+                      <label><input type="radio" name="cf-incomeType" value="weekly" /> Weekly paycheck</label>
+                      <label><input type="radio" name="cf-incomeType" value="irregular" /> Paid per job / irregular income</label>
+                    </div>
+
+                    <div id="cf-income-biweekly" style="margin-top:12px;">
+                      <div>
+                        <label>Pay label</label>
+                        <input id="cf-biweeklyLabel" type="text" placeholder="e.g. Paycheck" />
+                      </div>
+                      <div class="row">
+                        <div>
+                          <label>First paycheck date</label>
+                          <input id="cf-biweeklyDate" type="date" />
+                          <div class="hint">Every 14 days after this date is a payday.</div>
+                        </div>
+                        <div>
+                          <label>Paycheck amount</label>
+                          <input id="cf-biweeklyAmount" type="number" step="50" />
+                        </div>
+                      </div>
+                    </div>
+
+                    <div id="cf-income-weekly" style="display:none; margin-top:12px;">
+                      <div>
+                        <label>Pay label</label>
+                        <input id="cf-weeklyLabel" type="text" placeholder="e.g. Paycheck" />
+                      </div>
+                      <div class="row">
+                        <div>
+                          <label>Paid on</label>
+                          <select id="cf-weeklyDay">
+                            <option>Monday</option><option>Tuesday</option><option>Wednesday</option>
+                            <option>Thursday</option><option>Friday</option>
+                            <option>Saturday</option><option>Sunday</option>
+                          </select>
+                        </div>
+                        <div>
+                          <label>Weekly pay amount</label>
+                          <input id="cf-weeklyAmount" type="number" step="50" />
+                        </div>
+                      </div>
+                    </div>
+
+                    <div id="cf-income-irregular" style="display:none; margin-top:12px;">
+                      <div>
+                        <label>Description</label>
+                        <input id="cf-irregLabel" type="text" placeholder="e.g. Client A – Website, Bonus" />
+                      </div>
+                      <div class="row">
+                        <div>
+                          <label>Pay date</label>
+                          <input id="cf-irregDate" type="date" />
+                        </div>
+                        <div>
+                          <label>Amount</label>
+                          <input id="cf-irregAmount" type="number" step="50" />
+                        </div>
+                      </div>
+
+                      <div class="btnRow" style="margin-top:10px;">
+                        <button id="cf-addPayBtn" type="button">Add paycheck</button>
+                        <button id="cf-clearPaysBtn" class="btnSecondary" type="button">Clear list</button>
+                      </div>
+
+                      <table>
+                        <thead>
+                          <tr>
+                            <th class="tblLabelCell">Description</th>
+                            <th style="width:170px;">Date</th>
+                            <th class="tblAmtCell">Amount</th>
+                            <th class="tblActCell">Action</th>
+                          </tr>
+                        </thead>
+                        <tbody id="cf-payTable"></tbody>
+                      </table>
+                      <div class="hint">Tip: Add as many upcoming jobs/checks as you want.</div>
+                    </div>
+
+                  </div>
+                </div>
+
+                <div class="accItem">
+                  <button class="accBtn" type="button">ADDITIONAL INCOME ITEMS <span>⌄</span></button>
+                  <div class="accPanel">
+
+                    <div class="hint">Add extra income sources in addition to your main paycheck.</div>
+
+                    <div class="row">
+                      <div>
+                        <label>Label</label>
+                        <input id="cf-aiLabel" type="text" placeholder="e.g. Side gig, Bonus, Reimbursement" />
+                      </div>
+                      <div>
+                        <label>Amount</label>
+                        <input id="cf-aiAmount" type="number" step="50" placeholder="e.g. 250" />
+                      </div>
+                    </div>
+
+                    <div class="row">
+                      <div>
+                        <label>Type</label>
+                        <select id="cf-aiType">
+                          <option value="one_time">One-time (date)</option>
+                          <option value="weekly">Weekly (weekday)</option>
+                          <option value="monthly">Monthly (day of month)</option>
+                        </select>
+                      </div>
+                      <div id="cf-aiTypeField"></div>
+                    </div>
+
+                    <div class="btnRow">
+                      <button id="cf-aiAddBtn" type="button">Add income item</button>
+                      <button id="cf-aiClearBtn" class="btnSecondary" type="button">Clear items</button>
+                    </div>
+
+                    <table>
+                      <thead>
+                        <tr>
+                          <th class="tblLabelCell">Label</th>
+                          <th class="tblAmtCell">Amount</th>
+                          <th style="width:160px;">Type</th>
+                          <th style="width:220px;">Rule</th>
+                          <th class="tblActCell">Action</th>
+                        </tr>
+                      </thead>
+                      <tbody id="cf-aiTable"></tbody>
+                    </table>
+
+                  </div>
+                </div>
+
+                <div class="accItem">
+                  <button class="accBtn" type="button">FIXED EXPENSES <span>⌄</span></button>
+                  <div class="accPanel">
+
+                    <div class="hint">Add recurring monthly debits/credits (rent, subscriptions, transfers, etc.).</div>
+
+                    <div>
+                      <label>Event label</label>
+                      <input id="cf-newEventLabel" type="text" placeholder="e.g. Rent, Car payment" />
+                    </div>
+
+                    <div class="row">
+                      <div>
+                        <label>Day of month</label>
+                        <input id="cf-newEventDay" type="number" min="1" max="31" value="15" />
+                      </div>
+                      <div>
+                        <label>Amount (+ deposit / - debit)</label>
+                        <input id="cf-newEventAmount" type="number" step="50" value="-700" />
+                      </div>
+                    </div>
+
+                    <div class="row">
+                      <div>
+                        <label>Start date</label>
+                        <input id="cf-newEventStart" type="date" />
+                      </div>
+                      <div style="display:flex; align-items:end;">
+                        <button id="cf-addEventBtn" type="button">Add event</button>
+                      </div>
+                    </div>
+
+                    <table>
+                      <thead>
+                        <tr>
+                          <th class="tblLabelCell">Label</th>
+                          <th class="tblDayCell">Day</th>
+                          <th class="tblAmtCell">Amount</th>
+                          <th class="tblDateCell">Start date</th>
+                          <th class="tblActCell">Action</th>
+                        </tr>
+                      </thead>
+                      <tbody id="cf-eventsTbody"></tbody>
+                    </table>
+
+                  </div>
+                </div>
+
+                <div class="accItem">
+                  <button class="accBtn" type="button">DISCRETIONARY SPENDING <span>⌄</span></button>
+                  <div class="accPanel">
+
+                    <div class="hint">Add recurring monthly “budget spending” items (groceries, gas, eating out, etc.).</div>
+
+                    <div>
+                      <label>Category label</label>
+                      <input id="cf-newSpendLabel" type="text" placeholder="e.g. Groceries, Gas, Restaurants" />
+                    </div>
+
+                    <div class="row">
+                      <div>
+                        <label>Day of month</label>
+                        <input id="cf-newSpendDay" type="number" min="1" max="31" value="1" />
+                      </div>
+                      <div>
+                        <label>Amount (use negative for spending)</label>
+                        <input id="cf-newSpendAmount" type="number" step="50" value="-300" />
+                      </div>
+                    </div>
+
+                    <div class="row">
+                      <div>
+                        <label>Start date</label>
+                        <input id="cf-newSpendStart" type="date" />
+                      </div>
+                      <div style="display:flex; align-items:end;">
+                        <button id="cf-addSpendBtn" type="button">Add category</button>
+                      </div>
+                    </div>
+
+                    <table>
+                      <thead>
+                        <tr>
+                          <th class="tblLabelCell">Label</th>
+                          <th class="tblDayCell">Day</th>
+                          <th class="tblAmtCell">Amount</th>
+                          <th class="tblDateCell">Start date</th>
+                          <th class="tblActCell">Action</th>
+                        </tr>
+                      </thead>
+                      <tbody id="cf-spendTbody"></tbody>
+                    </table>
+
+                  </div>
+                </div>
+
+              </section>
+
+              <!-- PROFILES PANEL -->
+              <section id="panel-profiles">
+                <div class="accItem">
+                  <button class="accBtn" type="button">SAVED PROFILES <span>⌄</span></button>
+                  <div class="accPanel">
+
+                    <div class="row">
+                      <div>
+                        <label for="cf-profileName">Profile name</label>
+                        <input id="cf-profileName" type="text" placeholder="e.g. Baseline, Paycheck v2" />
+                      </div>
+                      <div>
+                        <label for="cf-profileSelect">Saved profiles</label>
+                        <select id="cf-profileSelect">
+                          <option value="">(none saved)</option>
+                        </select>
+                      </div>
+                    </div>
+
+                    <div class="btnRow">
+                      <button id="cf-saveProfileBtn" type="button">Save profile</button>
+                      <button id="cf-loadProfileBtn" type="button" class="btnSecondary">Load</button>
+                      <button id="cf-deleteProfileBtn" type="button" class="btnSecondary">Delete</button>
+                    </div>
+
+                    <div class="btnRow">
+                      <button id="cf-runBtn" type="button">Generate Chart</button>
+                      <button id="cf-resetBtn" type="button" class="btnSecondary">Reset</button>
+                    </div>
+
+                    <div id="cf-error" class="error"></div>
+                  </div>
+                </div>
+              </section>
+
+            </aside>
+          </div>
+        `;
+
+        // Post-render routines
+        this.#syncUIFromState();
+        this.#renderIrregularPayTable();
+        this.#renderMonthlyEventsTable();
+        this.#renderDiscretionaryTable();
+        this.#renderAdditionalIncomeTypeField();
+        this.#renderAdditionalIncomeTable();
+        this.#wireEvents();
+        this.#toggleIncomeUI();
+        this.#refreshProfileDropdown();
       }
 
-      // Discretionary spending
-      for (const ev of discretionary) {
-        if (cur >= ev.startDate && cur.getDate() === ev.day) {
-          net += ev.amount;
-          reasons.push(`${ev.label}: ${ev.amount >= 0 ? "+" : ""}${ev.amount}`);
-        }
-      }
+      // ---------- Events ----------
+      #wireEvents() {
+        // Mobile top tabs
+        const tabButtons = Array.from(this.mount.querySelectorAll(".mobileTabs .mTab"));
+        const setMobileTab = (name) => {
+          document.body.dataset.mobiletab = name;
+          tabButtons.forEach(b => b.classList.toggle("active", b.dataset.tab === name));
+        };
 
-      balance += net;
+        if (!document.body.dataset.mobiletab) setMobileTab("chart");
 
-      rows.push({
-        date: curISO,
-        net_change: net,
-        eod_balance: balance,
-        reasons,
-        is_today: curISO === this.#toISODate(today)
-      });
-    }
+        tabButtons.forEach(btn => {
+          btn.addEventListener("click", () => setMobileTab(btn.dataset.tab));
+        });
 
-    return rows;
-  }
+        const ui = this.#refs();
 
-  #irregularPaysToMap(pays) {
-    const map = new Map();
-    (pays ?? []).forEach((p, i) => {
-      if (!p.date) throw new Error(`Irregular paycheck #${i + 1}: date required.`);
-      const date = this.#parseISO(p.date);
-      const amt = Number(p.amount);
-      if (!Number.isFinite(amt)) throw new Error(`Irregular paycheck #${i + 1}: amount must be a number.`);
+        // Accordion open/close
+        this.mount.querySelectorAll(".accBtn").forEach(btn => {
+          btn.addEventListener("click", () => {
+            const item = btn.closest(".accItem");
+            if (!item) return;
+            item.classList.toggle("open");
+          });
+        });
 
-      const iso = this.#toISODate(date);
-      const label = String(p.label ?? "Income").trim() || "Income";
-      const labelLine = `${label}: ${amt >= 0 ? "+" : ""}${amt}`;
-
-      const cur = map.get(iso) ?? { total: 0, labels: [] };
-      cur.total += amt;
-      cur.labels.push(labelLine);
-      map.set(iso, cur);
-    });
-    return map;
-  }
-
-  // ---------- Range Slicing ----------
-  #sliceRowsForChartRange(rows, cfg) {
-    const range = String(cfg.chartRange ?? "ALL").toUpperCase();
-    if (range === "ALL") return rows;
-
-    const todayISO = this.#toISODate(this.#parseISO(cfg.todayDate));
-    const todayIdx = rows.findIndex(r => r.date === todayISO);
-    const endIdx = todayIdx >= 0 ? todayIdx : (rows.length - 1);
-    const endDate = this.#parseISO(rows[endIdx].date);
-
-    if (range === "YTD") {
-      const jan1 = new Date(endDate.getFullYear(), 0, 1);
-      const startIdx = rows.findIndex(r => this.#parseISO(r.date) >= jan1);
-      return rows.slice(Math.max(0, startIdx), endIdx + 1);
-    }
-
-    const days =
-      range === "1D" ? 1 :
-      range === "1W" ? 7 :
-      range === "1M" ? 30 :
-      range === "3M" ? 90 :
-      range === "1Y" ? 365 : rows.length;
-
-    const startIdx = Math.max(0, endIdx - (days - 1));
-    return rows.slice(startIdx, endIdx + 1);
-  }
-
-  // ---------- Preview + Chart ----------
-  #renderPreview(rows, cfg) {
-    const ui = this.#refs();
-
-    ui.preview.textContent = rows.map(r => {
-      const reasons = (r.reasons?.length ? " | " + r.reasons.join("; ") : "");
-      return `${r.date} | net ${r.net_change >= 0 ? "+" : ""}${r.net_change} | balance $${r.eod_balance.toLocaleString()}${reasons}`;
-    }).join("\n");
-
-    const final = rows[rows.length - 1];
-    const todayRow = rows.find(r => r.is_today);
-    const todayText = todayRow ? ` • Today: $${todayRow.eod_balance.toLocaleString()} (${todayRow.date})` : "";
-    ui.summary.textContent =
-      `Rows: ${rows.length.toLocaleString()} • Final: $${final.eod_balance.toLocaleString()} • Start: $${Number(cfg.startingAmount).toLocaleString()}${todayText}`;
-
-    const anchor = todayRow ?? final;
-    const big = this.mount.querySelector("#cf-balanceBig");
-    if (big) big.textContent = `$${Number(anchor.eod_balance).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-
-    const deltaEl = this.mount.querySelector("#cf-deltaToday");
-    if (deltaEl) {
-      const anchorIdx = rows.findIndex(r => r.date === anchor.date);
-      const prev = anchorIdx > 0 ? rows[anchorIdx - 1].eod_balance : anchor.eod_balance;
-      const diff = Number(anchor.eod_balance) - Number(prev);
-
-      const sign = diff >= 0 ? "▲" : "▼";
-      const txt = `${sign} $${Math.abs(diff).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-      deltaEl.textContent = txt;
-
-      deltaEl.classList.toggle("deltaUp", diff >= 0);
-      deltaEl.classList.toggle("deltaDown", diff < 0);
-    }
-  }
-
-  #renderChart(rows) {
-    const ui = this.#refs();
-    const labels = rows.map(r => r.date);
-    const balances = rows.map(r => r.eod_balance);
-
-    if (this.chart) this.chart.destroy();
-
-    this.chart = new Chart(ui.canvas, {
-      type: "line",
-      data: {
-        labels,
-        datasets: [
-          {
-            label: "End-of-Day Balance",
-            data: balances,
-            borderWidth: 3,
-            pointRadius: 0,
-            tension: 0.12,
-            borderColor: "#16a34a"
+        // Future projection toggle
+        ui.showFuture?.addEventListener("change", () => {
+          this.state.showFuture = !!ui.showFuture.checked;
+          if (ui.showFutureText) {
+            ui.showFutureText.textContent = this.state.showFuture ? "Projection on" : "Actual-to-date only";
           }
-        ]
-      },
-      options: {
-        responsive: true,
-        plugins: {
-          legend: { display: false },
-          tooltip: {
-            callbacks: {
-              label: (ctx) => `$${Number(ctx.parsed.y).toLocaleString()}`,
-              afterBody: (items) => {
-                const i = items?.[0]?.dataIndex;
-                const r = rows?.[i];
-                if (!r?.reasons?.length) return "";
-                return r.reasons.join("\n");
+          this.update();
+        });
+
+        // Range tabs
+        this.mount.querySelectorAll("#cf-rangeTabs button").forEach(b => {
+          b.addEventListener("click", () => {
+            const r = b.dataset.range;
+            this.state.chartRange = r;
+
+            this.mount.querySelectorAll("#cf-rangeTabs button").forEach(x => x.classList.remove("active"));
+            b.classList.add("active");
+
+            this.update();
+          });
+        });
+
+        [ui.startDate, ui.endDate, ui.todayDate, ui.startingAmount].forEach(el =>
+          el.addEventListener("change", () => this.update())
+        );
+
+        ui.incomeRadios.forEach(r => {
+          r.addEventListener("change", () => {
+            this.state.income.type = r.value;
+            this.#toggleIncomeUI();
+            this.update();
+          });
+        });
+
+        [ui.biweeklyLabel, ui.biweeklyDate, ui.biweeklyAmount].forEach(el =>
+          el.addEventListener("change", () => this.update())
+        );
+
+        [ui.weeklyLabel, ui.weeklyDay, ui.weeklyAmount].forEach(el =>
+          el.addEventListener("change", () => this.update())
+        );
+
+        ui.addPayBtn.addEventListener("click", () => {
+          try { ui.error.textContent = ""; this.#addIrregularPayFromInputs(); this.update(); }
+          catch (err) { ui.error.textContent = String(err?.message ?? err); }
+        });
+
+        ui.clearPaysBtn.addEventListener("click", () => {
+          this.state.income.irregular = [];
+          this.#renderIrregularPayTable();
+          this.update();
+        });
+
+        ui.payTableBody.addEventListener("click", (e) => {
+          const btn = e.target;
+          if (btn?.dataset?.action !== "removePay") return;
+          const idx = Number(btn.dataset.idx);
+          if (!Number.isFinite(idx)) return;
+          this.state.income.irregular.splice(idx, 1);
+          this.#renderIrregularPayTable();
+          this.update();
+        });
+
+        // Additional Income UI
+        ui.aiType.addEventListener("change", () => this.#renderAdditionalIncomeTypeField());
+
+        ui.aiAddBtn.addEventListener("click", () => {
+          try { ui.error.textContent = ""; this.#addAdditionalIncomeFromInputs(); this.update(); }
+          catch (err) { ui.error.textContent = String(err?.message ?? err); }
+        });
+
+        ui.aiClearBtn.addEventListener("click", () => {
+          this.state.additionalIncome = [];
+          this.#renderAdditionalIncomeTable();
+          this.update();
+        });
+
+        ui.aiTable.addEventListener("click", (e) => {
+          const btn = e.target;
+          if (btn?.dataset?.action !== "aiRemove") return;
+          const idx = Number(btn.dataset.idx);
+          if (!Number.isFinite(idx)) return;
+          this.state.additionalIncome.splice(idx, 1);
+          this.#renderAdditionalIncomeTable();
+          this.update();
+        });
+
+        // Fixed expenses
+        ui.addEventBtn.addEventListener("click", () => {
+          try { ui.error.textContent = ""; this.#addMonthlyEventFromInputs(); this.#renderMonthlyEventsTable(); this.update(); }
+          catch (err) { ui.error.textContent = String(err?.message ?? err); }
+        });
+
+        ui.eventsTbody.addEventListener("change", (e) => {
+          const el = e.target;
+          const idx = Number(el?.dataset?.idx);
+          const field = el?.dataset?.field;
+          if (!Number.isFinite(idx) || !field) return;
+
+          const ev = this.state.monthlyEvents[idx];
+          if (!ev) return;
+
+          if (field === "label") ev.label = el.value;
+          if (field === "day") ev.day = Number(el.value);
+          if (field === "amount") ev.amount = Number(el.value);
+          if (field === "startDate") ev.startDate = el.value;
+
+          this.update();
+        });
+
+        ui.eventsTbody.addEventListener("click", (e) => {
+          const btn = e.target;
+          if (btn?.dataset?.action !== "removeEvent") return;
+          const idx = Number(btn.dataset.idx);
+          if (!Number.isFinite(idx)) return;
+          this.state.monthlyEvents.splice(idx, 1);
+          this.#renderMonthlyEventsTable();
+          this.update();
+        });
+
+        // Discretionary spending
+        ui.addSpendBtn?.addEventListener("click", () => {
+          try {
+            ui.error.textContent = "";
+            this.#addDiscretionaryFromInputs();
+            this.#renderDiscretionaryTable();
+            this.update();
+          } catch (err) {
+            ui.error.textContent = String(err?.message ?? err);
+          }
+        });
+
+        ui.spendTbody?.addEventListener("change", (e) => {
+          const el = e.target;
+          const idx = Number(el?.dataset?.idx);
+          const field = el?.dataset?.field;
+          if (!Number.isFinite(idx) || !field) return;
+
+          const it = this.state.discretionarySpending[idx];
+          if (!it) return;
+
+          if (field === "label") it.label = el.value;
+          if (field === "day") it.day = Number(el.value);
+          if (field === "amount") it.amount = Number(el.value);
+          if (field === "startDate") it.startDate = el.value;
+
+          this.update();
+        });
+
+        ui.spendTbody?.addEventListener("click", (e) => {
+          const btn = e.target;
+          if (btn?.dataset?.action !== "removeSpend") return;
+          const idx = Number(btn.dataset.idx);
+          if (!Number.isFinite(idx)) return;
+
+          this.state.discretionarySpending.splice(idx, 1);
+          this.#renderDiscretionaryTable();
+          this.update();
+        });
+
+        // Profiles
+        ui.profileSelect?.addEventListener("change", () => {
+          if (ui.profileName) ui.profileName.value = ui.profileSelect.value || "";
+        });
+
+        ui.saveProfileBtn?.addEventListener("click", () => {
+          try {
+            ui.error.textContent = "";
+            this.#saveProfile(ui.profileName?.value);
+            const n = (ui.profileName?.value ?? "").trim();
+            if (n) ui.profileSelect.value = n;
+          } catch (err) {
+            ui.error.textContent = String(err?.message ?? err);
+          }
+        });
+
+        ui.loadProfileBtn?.addEventListener("click", () => {
+          try { ui.error.textContent = ""; this.#loadProfile(ui.profileSelect?.value); }
+          catch (err) { ui.error.textContent = String(err?.message ?? err); }
+        });
+
+        ui.deleteProfileBtn?.addEventListener("click", () => {
+          try {
+            ui.error.textContent = "";
+            this.#deleteProfile(ui.profileSelect?.value);
+            if (ui.profileName) ui.profileName.value = "";
+          } catch (err) {
+            ui.error.textContent = String(err?.message ?? err);
+          }
+        });
+
+        ui.runBtn.addEventListener("click", () => this.update());
+        ui.resetBtn.addEventListener("click", () => {
+          this.state = structuredClone(this.defaults);
+          this.#syncUIFromState();
+          this.#renderIrregularPayTable();
+          this.#renderMonthlyEventsTable();
+          this.#renderDiscretionaryTable();
+          this.#renderAdditionalIncomeTypeField();
+          this.#renderAdditionalIncomeTable();
+          this.#toggleIncomeUI();
+          this.#refreshProfileDropdown();
+          this.update();
+        });
+      }
+
+      #toggleIncomeUI() {
+        const ui = this.#refs();
+        const type = this.state.income.type;
+
+        ui.incomePill.textContent = type === "biweekly" ? "Bi-weekly" : (type === "weekly" ? "Weekly" : "Irregular");
+        ui.sectionBiweekly.style.display = type === "biweekly" ? "" : "none";
+        ui.sectionWeekly.style.display   = type === "weekly"   ? "" : "none";
+        ui.sectionIrregular.style.display= type === "irregular" ? "" : "none";
+        ui.incomeRadios.forEach(r => r.checked = (r.value === type));
+      }
+
+      // ---------- Saved Profiles ----------
+      #profileKey(name) { return `cf_profile_v1:${name}`; }
+
+      #listProfiles() {
+        return Object.keys(localStorage)
+          .filter(k => k.startsWith("cf_profile_v1:"))
+          .map(k => k.replace("cf_profile_v1:", ""))
+          .sort((a, b) => a.localeCompare(b));
+      }
+
+      #refreshProfileDropdown() {
+        const ui = this.#refs();
+        if (!ui.profileSelect) return;
+
+        const names = this.#listProfiles();
+        ui.profileSelect.innerHTML = names.length
+          ? names.map(n => `<option value="${this.#escapeAttr(n)}">${this.#escapeHtml(n)}</option>`).join("")
+          : `<option value="">(none saved)</option>`;
+      }
+
+      #saveProfile(name) {
+        const n = String(name ?? "").trim();
+        if (!n) throw new Error("Profile name is required.");
+        const cfg = this.getConfig();
+        localStorage.setItem(this.#profileKey(n), JSON.stringify(cfg));
+        this.#refreshProfileDropdown();
+      }
+
+      #loadProfile(name) {
+        const n = String(name ?? "").trim();
+        if (!n) throw new Error("Choose a profile to load.");
+        const raw = localStorage.getItem(this.#profileKey(n));
+        if (!raw) throw new Error("Profile not found.");
+        const cfg = JSON.parse(raw);
+        this.setConfig(cfg);
+      }
+
+      #deleteProfile(name) {
+        const n = String(name ?? "").trim();
+        if (!n) throw new Error("Choose a profile to delete.");
+        localStorage.removeItem(this.#profileKey(n));
+        this.#refreshProfileDropdown();
+      }
+
+      // ---------- Irregular Income ----------
+      #addIrregularPayFromInputs() {
+        const ui = this.#refs();
+        const label = ui.irregLabel.value.trim() || "Income";
+        const date = ui.irregDate.value;
+        const amount = Number(ui.irregAmount.value);
+
+        if (!date) throw new Error("Pay date is required.");
+        if (!Number.isFinite(amount)) throw new Error("Pay amount must be a number.");
+
+        this.state.income.irregular.push({ label, date, amount });
+        this.state.income.irregular.sort((a, b) => a.date.localeCompare(b.date));
+
+        ui.irregLabel.value = "";
+        ui.irregAmount.value = "";
+        this.#renderIrregularPayTable();
+      }
+
+      #renderIrregularPayTable() {
+        const ui = this.#refs();
+        const pays = this.state.income.irregular ?? [];
+
+        if (!pays.length) {
+          ui.payTableBody.innerHTML = `<tr><td colspan="4" class="small">No paychecks added yet.</td></tr>`;
+          return;
+        }
+
+        ui.payTableBody.innerHTML = pays.map((p, idx) => `
+          <tr>
+            <td class="tblLabelCell">${this.#escapeHtml(p.label)}</td>
+            <td>${this.#escapeHtml(p.date)}</td>
+            <td>$${Number(p.amount).toLocaleString()}</td>
+            <td><button type="button" data-action="removePay" data-idx="${idx}">Remove</button></td>
+          </tr>
+        `).join("");
+      }
+
+      // ---------- Additional Income ----------
+      #renderAdditionalIncomeTypeField() {
+        const ui = this.#refs();
+        const type = ui.aiType.value;
+
+        if (type === "one_time") {
+          ui.aiTypeField.innerHTML = `
+            <label>Date</label>
+            <input id="cf-aiDate" type="date" />
+          `;
+        } else if (type === "weekly") {
+          ui.aiTypeField.innerHTML = `
+            <label>Weekday + start date</label>
+            <div class="row">
+              <select id="cf-aiWeekday">
+                <option>Monday</option><option>Tuesday</option><option>Wednesday</option>
+                <option>Thursday</option><option>Friday</option><option>Saturday</option><option>Sunday</option>
+              </select>
+              <input id="cf-aiStart" type="date" />
+            </div>
+          `;
+        } else {
+          ui.aiTypeField.innerHTML = `
+            <label>Day of month + start date</label>
+            <div class="row">
+              <input id="cf-aiDay" type="number" min="1" max="31" value="1" />
+              <input id="cf-aiStart" type="date" />
+            </div>
+          `;
+        }
+
+        const dateEl = this.mount.querySelector("#cf-aiDate");
+        const startEl = this.mount.querySelector("#cf-aiStart");
+        if (dateEl && !dateEl.value) dateEl.value = ui.startDate.value;
+        if (startEl && !startEl.value) startEl.value = ui.startDate.value;
+      }
+
+      #addAdditionalIncomeFromInputs() {
+        const ui = this.#refs();
+        const label = ui.aiLabel.value.trim() || "Additional income";
+        const amount = Number(ui.aiAmount.value);
+        const type = ui.aiType.value;
+
+        if (!Number.isFinite(amount)) throw new Error("Additional income amount must be a number.");
+
+        if (type === "one_time") {
+          const date = this.mount.querySelector("#cf-aiDate")?.value;
+          if (!date) throw new Error("One-time income requires a date.");
+          this.state.additionalIncome.push({ label, type, amount, date });
+        } else if (type === "weekly") {
+          const weekday = this.mount.querySelector("#cf-aiWeekday")?.value;
+          const startDate = this.mount.querySelector("#cf-aiStart")?.value;
+          if (!weekday || !startDate) throw new Error("Weekly income requires weekday and start date.");
+          this.state.additionalIncome.push({ label, type, amount, weekday, startDate });
+        } else {
+          const day = Number(this.mount.querySelector("#cf-aiDay")?.value);
+          const startDate = this.mount.querySelector("#cf-aiStart")?.value;
+          if (!Number.isFinite(day) || day < 1 || day > 31) throw new Error("Monthly income day must be 1–31.");
+          if (!startDate) throw new Error("Monthly income requires a start date.");
+          this.state.additionalIncome.push({ label, type, amount, day, startDate });
+        }
+
+        ui.aiLabel.value = "";
+        ui.aiAmount.value = "";
+        this.#renderAdditionalIncomeTable();
+      }
+
+      #renderAdditionalIncomeTable() {
+        const ui = this.#refs();
+        const items = this.state.additionalIncome ?? [];
+
+        if (!items.length) {
+          ui.aiTable.innerHTML = `<tr><td colspan="5" class="small">No additional income items.</td></tr>`;
+          return;
+        }
+
+        ui.aiTable.innerHTML = items.map((it, idx) => {
+          const rule =
+            it.type === "one_time" ? it.date :
+            it.type === "weekly" ? `${it.weekday} (from ${it.startDate})` :
+            `Day ${it.day} (from ${it.startDate})`;
+
+          return `
+            <tr>
+              <td class="tblLabelCell">${this.#escapeHtml(it.label)}</td>
+              <td class="tblAmtCell">$${Number(it.amount).toLocaleString()}</td>
+              <td>${this.#escapeHtml(it.type)}</td>
+              <td>${this.#escapeHtml(rule)}</td>
+              <td class="tblActCell">
+                <button type="button" data-action="aiRemove" data-idx="${idx}">Remove</button>
+              </td>
+            </tr>
+          `;
+        }).join("");
+      }
+
+      // ---------- Monthly Events ----------
+      #addMonthlyEventFromInputs() {
+        const ui = this.#refs();
+        const label = ui.newEventLabel.value.trim() || "Monthly event";
+        const day = Number(ui.newEventDay.value);
+        const amount = Number(ui.newEventAmount.value);
+        const startDate = ui.newEventStart.value;
+
+        if (!Number.isFinite(day) || day < 1 || day > 31) throw new Error("Monthly event day must be 1–31.");
+        if (!Number.isFinite(amount)) throw new Error("Monthly event amount must be a number.");
+        if (!startDate) throw new Error("Monthly event start date is required.");
+
+        this.state.monthlyEvents.push({ label, day, amount, startDate });
+        ui.newEventLabel.value = "";
+      }
+
+      #renderMonthlyEventsTable() {
+        const ui = this.#refs();
+        const events = this.state.monthlyEvents ?? [];
+
+        if (!events.length) {
+          ui.eventsTbody.innerHTML = `<tr><td colspan="5" class="small">No monthly events yet. Add one above.</td></tr>`;
+          return;
+        }
+
+        ui.eventsTbody.innerHTML = events.map((ev, idx) => `
+          <tr>
+            <td class="tblLabelCell">
+              <input class="tblLabelInput" data-idx="${idx}" data-field="label" type="text"
+                     value="${this.#escapeAttr(ev.label)}" />
+            </td>
+            <td class="tblDayCell">
+              <input data-idx="${idx}" data-field="day" type="number" min="1" max="31"
+                     value="${Number(ev.day)}" />
+            </td>
+            <td class="tblAmtCell">
+              <input data-idx="${idx}" data-field="amount" type="number" step="50"
+                     value="${Number(ev.amount)}" />
+            </td>
+            <td class="tblDateCell">
+              <input data-idx="${idx}" data-field="startDate" type="date"
+                     value="${this.#escapeAttr(ev.startDate)}" />
+            </td>
+            <td class="tblActCell">
+              <button type="button" data-action="removeEvent" data-idx="${idx}">Remove</button>
+            </td>
+          </tr>
+        `).join("");
+      }
+
+      // ---------- Discretionary Spending ----------
+      #addDiscretionaryFromInputs() {
+        const ui = this.#refs();
+        const label = ui.newSpendLabel.value.trim() || "Discretionary spending";
+        const day = Number(ui.newSpendDay.value);
+        const amount = Number(ui.newSpendAmount.value);
+        const startDate = ui.newSpendStart.value;
+
+        if (!Number.isFinite(day) || day < 1 || day > 31) throw new Error("Spending day must be 1–31.");
+        if (!Number.isFinite(amount)) throw new Error("Spending amount must be a number.");
+        if (!startDate) throw new Error("Spending start date is required.");
+
+        this.state.discretionarySpending.push({ label, day, amount, startDate });
+        ui.newSpendLabel.value = "";
+      }
+
+      #renderDiscretionaryTable() {
+        const ui = this.#refs();
+        const items = this.state.discretionarySpending ?? [];
+        if (!ui.spendTbody) return;
+
+        if (!items.length) {
+          ui.spendTbody.innerHTML = `<tr><td colspan="5" class="small">No discretionary categories yet. Add one above.</td></tr>`;
+          return;
+        }
+
+        ui.spendTbody.innerHTML = items.map((it, idx) => `
+          <tr>
+            <td class="tblLabelCell">
+              <input class="tblLabelInput" data-idx="${idx}" data-field="label" type="text"
+                     value="${this.#escapeAttr(it.label)}" />
+            </td>
+            <td class="tblDayCell">
+              <input data-idx="${idx}" data-field="day" type="number" min="1" max="31"
+                     value="${Number(it.day)}" />
+            </td>
+            <td class="tblAmtCell">
+              <input data-idx="${idx}" data-field="amount" type="number" step="50"
+                     value="${Number(it.amount)}" />
+            </td>
+            <td class="tblDateCell">
+              <input data-idx="${idx}" data-field="startDate" type="date"
+                     value="${this.#escapeAttr(it.startDate)}" />
+            </td>
+            <td class="tblActCell">
+              <button type="button" data-action="removeSpend" data-idx="${idx}">Remove</button>
+            </td>
+          </tr>
+        `).join("");
+      }
+
+      // ---------- Dataset Engine ----------
+      #buildDataset(cfg) {
+        const start = this.#parseISO(cfg.startDate);
+        const end = this.#parseISO(cfg.endDate);
+        if (end < start) throw new Error("End date must be on/after start date.");
+        const today = this.#parseISO(cfg.todayDate);
+
+        let balance = Number(cfg.startingAmount);
+        if (!Number.isFinite(balance)) throw new Error("Starting amount must be a number.");
+
+        const monthlyEvents = (cfg.monthlyEvents ?? []).map((ev, i) => {
+          const label = String(ev.label ?? "Monthly event");
+          const day = Number(ev.day);
+          const amount = Number(ev.amount);
+          const startDate = this.#parseISO(ev.startDate);
+
+          if (!Number.isFinite(day) || day < 1 || day > 31) throw new Error(`Monthly event #${i + 1}: day must be 1–31.`);
+          if (!Number.isFinite(amount)) throw new Error(`Monthly event #${i + 1}: amount must be a number.`);
+          return { label, day, amount, startDate };
+        });
+
+        const discretionary = (cfg.discretionarySpending ?? []).map((ev, i) => {
+          const label = String(ev.label ?? "Discretionary spending");
+          const day = Number(ev.day);
+          const amount = Number(ev.amount);
+          const startDate = this.#parseISO(ev.startDate);
+
+          if (!Number.isFinite(day) || day < 1 || day > 31) throw new Error(`Discretionary item #${i + 1}: day must be 1–31.`);
+          if (!Number.isFinite(amount)) throw new Error(`Discretionary item #${i + 1}: amount must be a number.`);
+          return { label, day, amount, startDate };
+        });
+
+        const irregularMap = this.#irregularPaysToMap(cfg.income.irregular);
+
+        const rows = [];
+        for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
+          const cur = new Date(d);
+          const curISO = this.#toISODate(cur);
+          let net = 0;
+          const reasons = [];
+
+          // Primary paycheck
+          if (cfg.income.type === "biweekly") {
+            const label = (cfg.income.biweekly.label || "Paycheck").trim() || "Paycheck";
+            const fp = this.#parseISO(cfg.income.biweekly.firstPayday);
+            const amt = Number(cfg.income.biweekly.amount);
+            if (!Number.isFinite(amt)) throw new Error("Bi-weekly paycheck amount must be a number.");
+
+            if (cur >= fp) {
+              const diffDays = Math.floor((cur - fp) / 86400000);
+              if (diffDays % 14 === 0) { net += amt; reasons.push(`${label}: +${amt}`); }
+            }
+          } else if (cfg.income.type === "weekly") {
+            const label = (cfg.income.weekly.label || "Paycheck").trim() || "Paycheck";
+            const amt = Number(cfg.income.weekly.amount);
+            if (!Number.isFinite(amt)) throw new Error("Weekly pay amount must be a number.");
+
+            if (this.#weekdayName(cur) === cfg.income.weekly.weekday) { net += amt; reasons.push(`${label}: +${amt}`); }
+          } else if (cfg.income.type === "irregular") {
+            const obj = irregularMap.get(curISO);
+            if (obj) { net += obj.total; obj.labels.forEach(s => reasons.push(s)); }
+          }
+
+          // Additional income
+          for (const it of (cfg.additionalIncome ?? [])) {
+            if (it.type === "one_time" && curISO === it.date) {
+              net += it.amount;
+              reasons.push(`${it.label}: +${it.amount}`);
+            }
+            if (it.type === "weekly") {
+              if (cur >= this.#parseISO(it.startDate) && this.#weekdayName(cur) === it.weekday) {
+                net += it.amount;
+                reasons.push(`${it.label}: +${it.amount}`);
+              }
+            }
+            if (it.type === "monthly") {
+              if (cur >= this.#parseISO(it.startDate) && cur.getDate() === Number(it.day)) {
+                net += it.amount;
+                reasons.push(`${it.label}: +${it.amount}`);
               }
             }
           }
-        },
-        interaction: { mode: "index", intersect: false },
-        scales: {
-          x: { ticks: { maxTicksLimit: 12 } },
-          y: { ticks: { callback: (v) => `$${Number(v).toLocaleString()}` } }
+
+          // Fixed monthly events
+          for (const ev of monthlyEvents) {
+            if (cur >= ev.startDate && cur.getDate() === ev.day) {
+              net += ev.amount;
+              reasons.push(`${ev.label}: ${ev.amount >= 0 ? "+" : ""}${ev.amount}`);
+            }
+          }
+
+          // Discretionary spending
+          for (const ev of discretionary) {
+            if (cur >= ev.startDate && cur.getDate() === ev.day) {
+              net += ev.amount;
+              reasons.push(`${ev.label}: ${ev.amount >= 0 ? "+" : ""}${ev.amount}`);
+            }
+          }
+
+          balance += net;
+
+          rows.push({
+            date: curISO,
+            net_change: net,
+            eod_balance: balance,
+            reasons,
+            is_today: curISO === this.#toISODate(today)
+          });
+        }
+
+        return rows;
+      }
+
+      #irregularPaysToMap(pays) {
+        const map = new Map();
+        (pays ?? []).forEach((p, i) => {
+          if (!p.date) throw new Error(`Irregular paycheck #${i + 1}: date required.`);
+          const date = this.#parseISO(p.date);
+          const amt = Number(p.amount);
+          if (!Number.isFinite(amt)) throw new Error(`Irregular paycheck #${i + 1}: amount must be a number.`);
+
+          const iso = this.#toISODate(date);
+          const label = String(p.label ?? "Income").trim() || "Income";
+          const labelLine = `${label}: ${amt >= 0 ? "+" : ""}${amt}`;
+
+          const cur = map.get(iso) ?? { total: 0, labels: [] };
+          cur.total += amt;
+          cur.labels.push(labelLine);
+          map.set(iso, cur);
+        });
+        return map;
+      }
+
+      // ---------- Range Slicing ----------
+      #sliceRowsForChartRange(rows, cfg) {
+        const range = String(cfg.chartRange ?? "ALL").toUpperCase();
+        const showFuture = !!cfg.showFuture;
+
+        const todayISO = this.#toISODate(this.#parseISO(cfg.todayDate));
+        const todayIdx = rows.findIndex(r => r.date === todayISO);
+        const lastIdx = rows.length - 1;
+
+        // Decide what "end" means:
+        // - Actual-to-date only => end at today (if present)
+        // - Show future => end at dataset end
+        const endIdx = showFuture ? lastIdx : (todayIdx >= 0 ? todayIdx : lastIdx);
+        const endDate = this.#parseISO(rows[endIdx].date);
+
+        if (range === "ALL") return rows.slice(0, endIdx + 1);
+
+        if (range === "YTD") {
+          const jan1 = new Date(endDate.getFullYear(), 0, 1);
+          const startIdx = rows.findIndex(r => this.#parseISO(r.date) >= jan1);
+          return rows.slice(Math.max(0, startIdx), endIdx + 1);
+        }
+
+        const days =
+          range === "1D" ? 1 :
+          range === "1W" ? 7 :
+          range === "1M" ? 30 :
+          range === "3M" ? 90 :
+          range === "1Y" ? 365 : rows.length;
+
+        const startIdx = Math.max(0, endIdx - (days - 1));
+        return rows.slice(startIdx, endIdx + 1);
+      }
+
+      // ---------- Preview + Chart ----------
+      #renderPreview(rows, cfg) {
+        const ui = this.#refs();
+
+        ui.preview.textContent = rows.map(r => {
+          const reasons = (r.reasons?.length ? " | " + r.reasons.join("; ") : "");
+          return `${r.date} | net ${r.net_change >= 0 ? "+" : ""}${r.net_change} | balance $${r.eod_balance.toLocaleString()}${reasons}`;
+        }).join("\n");
+
+        const final = rows[rows.length - 1];
+        const todayRow = rows.find(r => r.is_today);
+        const todayText = todayRow ? ` • Today: $${todayRow.eod_balance.toLocaleString()} (${todayRow.date})` : "";
+        ui.summary.textContent =
+          `Rows: ${rows.length.toLocaleString()} • Final: $${final.eod_balance.toLocaleString()} • Start: $${Number(cfg.startingAmount).toLocaleString()}${todayText}`;
+
+        const anchor = todayRow ?? final;
+        const big = this.mount.querySelector("#cf-balanceBig");
+        if (big) big.textContent = `$${Number(anchor.eod_balance).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
+        const deltaEl = this.mount.querySelector("#cf-deltaToday");
+        if (deltaEl) {
+          const anchorIdx = rows.findIndex(r => r.date === anchor.date);
+          const prev = anchorIdx > 0 ? rows[anchorIdx - 1].eod_balance : anchor.eod_balance;
+          const diff = Number(anchor.eod_balance) - Number(prev);
+
+          const sign = diff >= 0 ? "▲" : "▼";
+          const txt = `${sign} $${Math.abs(diff).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+          deltaEl.textContent = txt;
+
+          deltaEl.classList.toggle("deltaUp", diff >= 0);
+          deltaEl.classList.toggle("deltaDown", diff < 0);
         }
       }
-    });
-  }
 
-  // ---------- Refs + Sync ----------
-  #refs() {
-    return {
-      startDate: this.mount.querySelector("#cf-startDate"),
-      endDate: this.mount.querySelector("#cf-endDate"),
-      todayDate: this.mount.querySelector("#cf-todayDate"),
-      startingAmount: this.mount.querySelector("#cf-startingAmount"),
+      #renderChart(rows) {
+        const ui = this.#refs();
+        const labels = rows.map(r => r.date);
+        const balances = rows.map(r => r.eod_balance);
 
-      incomePill: this.mount.querySelector("#cf-incomePill"),
-      incomeRadios: Array.from(this.mount.querySelectorAll('input[name="cf-incomeType"]')),
+        if (this.chart) this.chart.destroy();
 
-      sectionBiweekly: this.mount.querySelector("#cf-income-biweekly"),
-      sectionWeekly: this.mount.querySelector("#cf-income-weekly"),
-      sectionIrregular: this.mount.querySelector("#cf-income-irregular"),
+        this.chart = new Chart(ui.canvas, {
+          type: "line",
+          data: {
+            labels,
+            datasets: [
+              {
+                label: "End-of-Day Balance",
+                data: balances,
+                borderWidth: 3,
+                pointRadius: 0,
+                tension: 0.12,
+                borderColor: "#16a34a"
+              }
+            ]
+          },
+          options: {
+            responsive: true,
+            plugins: {
+              legend: { display: false },
+              tooltip: {
+                callbacks: {
+                  label: (ctx) => `$${Number(ctx.parsed.y).toLocaleString()}`,
+                  afterBody: (items) => {
+                    const i = items?.[0]?.dataIndex;
+                    const r = rows?.[i];
+                    if (!r?.reasons?.length) return "";
+                    return r.reasons.join("\n");
+                  }
+                }
+              }
+            },
+            interaction: { mode: "index", intersect: false },
+            scales: {
+              x: { ticks: { maxTicksLimit: 12 } },
+              y: { ticks: { callback: (v) => `$${Number(v).toLocaleString()}` } }
+            }
+          }
+        });
+      }
 
-      biweeklyLabel: this.mount.querySelector("#cf-biweeklyLabel"),
-      biweeklyDate: this.mount.querySelector("#cf-biweeklyDate"),
-      biweeklyAmount: this.mount.querySelector("#cf-biweeklyAmount"),
+      // ---------- Refs + Sync ----------
+      #refs() {
+        return {
+          startDate: this.mount.querySelector("#cf-startDate"),
+          endDate: this.mount.querySelector("#cf-endDate"),
+          todayDate: this.mount.querySelector("#cf-todayDate"),
+          startingAmount: this.mount.querySelector("#cf-startingAmount"),
 
-      weeklyLabel: this.mount.querySelector("#cf-weeklyLabel"),
-      weeklyDay: this.mount.querySelector("#cf-weeklyDay"),
-      weeklyAmount: this.mount.querySelector("#cf-weeklyAmount"),
+          incomePill: this.mount.querySelector("#cf-incomePill"),
+          incomeRadios: Array.from(this.mount.querySelectorAll('input[name="cf-incomeType"]')),
 
-      irregLabel: this.mount.querySelector("#cf-irregLabel"),
-      irregDate: this.mount.querySelector("#cf-irregDate"),
-      irregAmount: this.mount.querySelector("#cf-irregAmount"),
-      addPayBtn: this.mount.querySelector("#cf-addPayBtn"),
-      clearPaysBtn: this.mount.querySelector("#cf-clearPaysBtn"),
-      payTableBody: this.mount.querySelector("#cf-payTable"),
+          sectionBiweekly: this.mount.querySelector("#cf-income-biweekly"),
+          sectionWeekly: this.mount.querySelector("#cf-income-weekly"),
+          sectionIrregular: this.mount.querySelector("#cf-income-irregular"),
 
-      aiLabel: this.mount.querySelector("#cf-aiLabel"),
-      aiAmount: this.mount.querySelector("#cf-aiAmount"),
-      aiType: this.mount.querySelector("#cf-aiType"),
-      aiTypeField: this.mount.querySelector("#cf-aiTypeField"),
-      aiAddBtn: this.mount.querySelector("#cf-aiAddBtn"),
-      aiClearBtn: this.mount.querySelector("#cf-aiClearBtn"),
-      aiTable: this.mount.querySelector("#cf-aiTable"),
+          biweeklyLabel: this.mount.querySelector("#cf-biweeklyLabel"),
+          biweeklyDate: this.mount.querySelector("#cf-biweeklyDate"),
+          biweeklyAmount: this.mount.querySelector("#cf-biweeklyAmount"),
 
-      newEventLabel: this.mount.querySelector("#cf-newEventLabel"),
-      newEventDay: this.mount.querySelector("#cf-newEventDay"),
-      newEventAmount: this.mount.querySelector("#cf-newEventAmount"),
-      newEventStart: this.mount.querySelector("#cf-newEventStart"),
-      addEventBtn: this.mount.querySelector("#cf-addEventBtn"),
-      eventsTbody: this.mount.querySelector("#cf-eventsTbody"),
+          weeklyLabel: this.mount.querySelector("#cf-weeklyLabel"),
+          weeklyDay: this.mount.querySelector("#cf-weeklyDay"),
+          weeklyAmount: this.mount.querySelector("#cf-weeklyAmount"),
 
-      newSpendLabel: this.mount.querySelector("#cf-newSpendLabel"),
-      newSpendDay: this.mount.querySelector("#cf-newSpendDay"),
-      newSpendAmount: this.mount.querySelector("#cf-newSpendAmount"),
-      newSpendStart: this.mount.querySelector("#cf-newSpendStart"),
-      addSpendBtn: this.mount.querySelector("#cf-addSpendBtn"),
-      spendTbody: this.mount.querySelector("#cf-spendTbody"),
+          irregLabel: this.mount.querySelector("#cf-irregLabel"),
+          irregDate: this.mount.querySelector("#cf-irregDate"),
+          irregAmount: this.mount.querySelector("#cf-irregAmount"),
+          addPayBtn: this.mount.querySelector("#cf-addPayBtn"),
+          clearPaysBtn: this.mount.querySelector("#cf-clearPaysBtn"),
+          payTableBody: this.mount.querySelector("#cf-payTable"),
 
-      profileName: this.mount.querySelector("#cf-profileName"),
-      profileSelect: this.mount.querySelector("#cf-profileSelect"),
-      saveProfileBtn: this.mount.querySelector("#cf-saveProfileBtn"),
-      loadProfileBtn: this.mount.querySelector("#cf-loadProfileBtn"),
-      deleteProfileBtn: this.mount.querySelector("#cf-deleteProfileBtn"),
+          aiLabel: this.mount.querySelector("#cf-aiLabel"),
+          aiAmount: this.mount.querySelector("#cf-aiAmount"),
+          aiType: this.mount.querySelector("#cf-aiType"),
+          aiTypeField: this.mount.querySelector("#cf-aiTypeField"),
+          aiAddBtn: this.mount.querySelector("#cf-aiAddBtn"),
+          aiClearBtn: this.mount.querySelector("#cf-aiClearBtn"),
+          aiTable: this.mount.querySelector("#cf-aiTable"),
 
-      runBtn: this.mount.querySelector("#cf-runBtn"),
-      resetBtn: this.mount.querySelector("#cf-resetBtn"),
-      error: this.mount.querySelector("#cf-error"),
+          newEventLabel: this.mount.querySelector("#cf-newEventLabel"),
+          newEventDay: this.mount.querySelector("#cf-newEventDay"),
+          newEventAmount: this.mount.querySelector("#cf-newEventAmount"),
+          newEventStart: this.mount.querySelector("#cf-newEventStart"),
+          addEventBtn: this.mount.querySelector("#cf-addEventBtn"),
+          eventsTbody: this.mount.querySelector("#cf-eventsTbody"),
 
-      preview: this.mount.querySelector("#cf-preview"),
-      summary: this.mount.querySelector("#cf-summary"),
-      canvas: this.mount.querySelector("#cf-chart")
-    };
-  }
+          newSpendLabel: this.mount.querySelector("#cf-newSpendLabel"),
+          newSpendDay: this.mount.querySelector("#cf-newSpendDay"),
+          newSpendAmount: this.mount.querySelector("#cf-newSpendAmount"),
+          newSpendStart: this.mount.querySelector("#cf-newSpendStart"),
+          addSpendBtn: this.mount.querySelector("#cf-addSpendBtn"),
+          spendTbody: this.mount.querySelector("#cf-spendTbody"),
 
-  #syncUIFromState() {
-    const ui = this.#refs();
-    ui.startDate.value = this.state.startDate;
-    ui.endDate.value = this.state.endDate;
-    ui.todayDate.value = this.state.todayDate;
-    ui.startingAmount.value = String(this.state.startingAmount);
+          profileName: this.mount.querySelector("#cf-profileName"),
+          profileSelect: this.mount.querySelector("#cf-profileSelect"),
+          saveProfileBtn: this.mount.querySelector("#cf-saveProfileBtn"),
+          loadProfileBtn: this.mount.querySelector("#cf-loadProfileBtn"),
+          deleteProfileBtn: this.mount.querySelector("#cf-deleteProfileBtn"),
 
-    ui.incomeRadios.forEach(r => r.checked = (r.value === this.state.income.type));
+          runBtn: this.mount.querySelector("#cf-runBtn"),
+          resetBtn: this.mount.querySelector("#cf-resetBtn"),
+          error: this.mount.querySelector("#cf-error"),
 
-    ui.biweeklyLabel.value = this.state.income.biweekly.label;
-    ui.biweeklyDate.value = this.state.income.biweekly.firstPayday;
-    ui.biweeklyAmount.value = String(this.state.income.biweekly.amount);
+          preview: this.mount.querySelector("#cf-preview"),
+          summary: this.mount.querySelector("#cf-summary"),
+          canvas: this.mount.querySelector("#cf-chart"),
 
-    ui.weeklyLabel.value = this.state.income.weekly.label;
-    ui.weeklyDay.value = this.state.income.weekly.weekday;
-    ui.weeklyAmount.value = String(this.state.income.weekly.amount);
+          showFuture: this.mount.querySelector("#cf-showFuture"),
+          showFutureText: this.mount.querySelector("#cf-showFutureText")
+        };
+      }
 
-    ui.irregDate.value = this.state.startDate;
+      #syncUIFromState() {
+        const ui = this.#refs();
 
-    const r = String(this.state.chartRange ?? "ALL").toUpperCase();
-    this.mount.querySelectorAll("#cf-rangeTabs button").forEach(x => {
-      x.classList.toggle("active", x.dataset.range === r);
-    });
-  }
+        ui.startDate.value = this.state.startDate;
+        ui.endDate.value = this.state.endDate;
+        ui.todayDate.value = this.state.todayDate;
+        ui.startingAmount.value = String(this.state.startingAmount);
 
-  #readConfigFromUI() {
-    const ui = this.#refs();
-    const selectedType = ui.incomeRadios.find(r => r.checked)?.value ?? this.state.income.type;
-    this.state.income.type = selectedType;
+        if (ui.showFuture) ui.showFuture.checked = !!this.state.showFuture;
+        if (ui.showFutureText) ui.showFutureText.textContent = this.state.showFuture ? "Projection on" : "Actual-to-date only";
 
-    this.state.income.biweekly.label = ui.biweeklyLabel.value.trim() || "Paycheck";
-    this.state.income.biweekly.firstPayday = ui.biweeklyDate.value;
-    this.state.income.biweekly.amount = Number(ui.biweeklyAmount.value || 0);
+        ui.incomeRadios.forEach(r => r.checked = (r.value === this.state.income.type));
 
-    this.state.income.weekly.label = ui.weeklyLabel.value.trim() || "Paycheck";
-    this.state.income.weekly.weekday = ui.weeklyDay.value;
-    this.state.income.weekly.amount = Number(ui.weeklyAmount.value || 0);
+        ui.biweeklyLabel.value = this.state.income.biweekly.label;
+        ui.biweeklyDate.value = this.state.income.biweekly.firstPayday;
+        ui.biweeklyAmount.value = String(this.state.income.biweekly.amount);
 
-    return {
-      startDate: ui.startDate.value,
-      endDate: ui.endDate.value,
-      todayDate: ui.todayDate.value,
-      startingAmount: Number(ui.startingAmount.value || 0),
-      income: structuredClone(this.state.income),
-      additionalIncome: structuredClone(this.state.additionalIncome),
-      monthlyEvents: structuredClone(this.state.monthlyEvents),
-      discretionarySpending: structuredClone(this.state.discretionarySpending),
-      chartRange: this.state.chartRange
-    };
-  }
+        ui.weeklyLabel.value = this.state.income.weekly.label;
+        ui.weeklyDay.value = this.state.income.weekly.weekday;
+        ui.weeklyAmount.value = String(this.state.income.weekly.amount);
 
-  // ---------- Helpers ----------
-  #todayISO() { return new Date().toISOString().split("T")[0]; }
+        ui.irregDate.value = this.state.startDate;
 
-  #parseISO(yyyy_mm_dd) {
-    const d = new Date(`${yyyy_mm_dd}T00:00:00`);
-    if (Number.isNaN(d.getTime())) throw new Error(`Invalid date: ${yyyy_mm_dd}`);
-    return d;
-  }
+        const r = String(this.state.chartRange ?? "ALL").toUpperCase();
+        this.mount.querySelectorAll("#cf-rangeTabs button").forEach(x => {
+          x.classList.toggle("active", x.dataset.range === r);
+        });
+      }
 
-  #toISODate(d) {
-    const yyyy = d.getFullYear();
-    const mm = String(d.getMonth() + 1).padStart(2, "0");
-    const dd = String(d.getDate()).padStart(2, "0");
-    return `${yyyy}-${mm}-${dd}`;
-  }
+      #readConfigFromUI() {
+        const ui = this.#refs();
+        const selectedType = ui.incomeRadios.find(r => r.checked)?.value ?? this.state.income.type;
+        this.state.income.type = selectedType;
 
-  #weekdayName(d) {
-    const names = ["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"];
-    return names[d.getDay()];
-  }
+        this.state.income.biweekly.label = ui.biweeklyLabel.value.trim() || "Paycheck";
+        this.state.income.biweekly.firstPayday = ui.biweeklyDate.value;
+        this.state.income.biweekly.amount = Number(ui.biweeklyAmount.value || 0);
 
-  #escapeAttr(s) {
-    return String(s ?? "")
-      .replaceAll("&", "&amp;")
-      .replaceAll('"', "&quot;")
-      .replaceAll("<", "&lt;")
-      .replaceAll(">", "&gt;");
-  }
+        this.state.income.weekly.label = ui.weeklyLabel.value.trim() || "Paycheck";
+        this.state.income.weekly.weekday = ui.weeklyDay.value;
+        this.state.income.weekly.amount = Number(ui.weeklyAmount.value || 0);
 
-  #escapeHtml(s) {
-    return String(s ?? "")
-      .replaceAll("&", "&amp;")
-      .replaceAll("<", "&lt;")
-      .replaceAll(">", "&gt;");
-  }
+        this.state.showFuture = !!ui.showFuture?.checked;
 
-  #deepMerge(target, source) {
-    if (!source || typeof source !== "object") return target;
-    for (const [k, v] of Object.entries(source)) {
-      if (v && typeof v === "object" && !Array.isArray(v)) {
-        target[k] = this.#deepMerge(target[k] ?? {}, v);
-      } else {
-        target[k] = v;
+        return {
+          startDate: ui.startDate.value,
+          endDate: ui.endDate.value,
+          todayDate: ui.todayDate.value,
+          startingAmount: Number(ui.startingAmount.value || 0),
+          income: structuredClone(this.state.income),
+          additionalIncome: structuredClone(this.state.additionalIncome),
+          monthlyEvents: structuredClone(this.state.monthlyEvents),
+          discretionarySpending: structuredClone(this.state.discretionarySpending),
+          chartRange: this.state.chartRange,
+          showFuture: this.state.showFuture
+        };
+      }
+
+      // ---------- Helpers ----------
+      #todayISO() { return new Date().toISOString().split("T")[0]; }
+
+      #parseISO(yyyy_mm_dd) {
+        const d = new Date(`${yyyy_mm_dd}T00:00:00`);
+        if (Number.isNaN(d.getTime())) throw new Error(`Invalid date: ${yyyy_mm_dd}`);
+        return d;
+      }
+
+      #toISODate(d) {
+        const yyyy = d.getFullYear();
+        const mm = String(d.getMonth() + 1).padStart(2, "0");
+        const dd = String(d.getDate()).padStart(2, "0");
+        return `${yyyy}-${mm}-${dd}`;
+      }
+
+      #weekdayName(d) {
+        const names = ["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"];
+        return names[d.getDay()];
+      }
+
+      #escapeAttr(s) {
+        return String(s ?? "")
+          .replaceAll("&", "&amp;")
+          .replaceAll('"', "&quot;")
+          .replaceAll("<", "&lt;")
+          .replaceAll(">", "&gt;");
+      }
+
+      #escapeHtml(s) {
+        return String(s ?? "")
+          .replaceAll("&", "&amp;")
+          .replaceAll("<", "&lt;")
+          .replaceAll(">", "&gt;");
+      }
+
+      #deepMerge(target, source) {
+        if (!source || typeof source !== "object") return target;
+        for (const [k, v] of Object.entries(source)) {
+          if (v && typeof v === "object" && !Array.isArray(v)) {
+            target[k] = this.#deepMerge(target[k] ?? {}, v);
+          } else {
+            target[k] = v;
+          }
+        }
+        return target;
       }
     }
-    return target;
-  }
-}
 
-// Mount
-new CashflowTrajectory("#cashflow-app");
-</script>
+    // Mount
+    new CashflowTrajectory("#cashflow-app");
+  </script>
 </body>
 </html>
+
