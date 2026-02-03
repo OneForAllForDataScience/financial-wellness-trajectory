@@ -1832,10 +1832,24 @@ class CashflowTrajectory {
         },
         interaction: { mode: "index", intersect: false },
         scales: {
-          x: { ticks: { maxTicksLimit: 12 } },
-          y: { ticks: { callback: (v) => `$${Number(v).toLocaleString()}` } }
-        }
-      }
+  x: {
+    ticks: { maxTicksLimit: 12 },
+    offset: true,               // 👈 adds space before & after data
+    grid: {
+      drawBorder: false
+    }
+  },
+  y: {
+    ticks: {
+      callback: (v) => `$${Number(v).toLocaleString()}`
+    }
+  }
+},
+layout: {
+  padding: {
+    right: 24                   // 👈 extra breathing room on the right
+  }
+}      }
     });
   }
 
